@@ -49,6 +49,8 @@ Apply `supabase/migrations/20261005153433_init.sql` to the corporate Supabase pr
 ## Railway
 Use one service replica. Connect the corporate GitHub repository to Railway and deploy from `main`. Add the same secrets as Railway Variables. Railway should auto-deploy on every push to `main`.
 
+Current production health URL: `https://wpvh-sales-control-production.up.railway.app/health`.
+
 ## Health
 `GET /health`
 
