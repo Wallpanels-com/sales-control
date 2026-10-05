@@ -27,6 +27,9 @@
 - Контролируемый Railway-тест подтвердил полный цикл: тестовый inbound открыл SLA, после 2 минут Railway отправил ровно один Telegram alert, тестовый ручной `app`-ответ закрыл инцидент, а на 4-й и 5-й минутах новых alerts не появилось. Временные строки теста удалены.
 - WallPanels добавлен как вторая компания с отдельным `locationId` и отдельной строкой company. Read-only API-проверка подтвердила Location, 36 Users, Conversations, Messages, Contacts и Opportunities. В реальной выгрузке встретились Email, Facebook, Instagram, SMS и WhatsApp; calls исключены. Источники `app` и `workflow` различаются, поэтому действующее human reply правило подходит без изменения.
 - В Supabase синхронизированы 36 WallPanels users и 3 точных staff mappings. Реальная проверка маршрутизации WallPanels выбрала Opportunity Owner; выбранный владелец присутствует среди users этой локации. `locationId` Verona и WallPanels различаются.
+- Закрытые WallPanels variables добавлены в существующий Railway service. Production deployment успешен: `/health` возвращает `ready=true`, `telegramPolling=true`, компании `verona` и `wallpanels`, `TEST_MODE=true` и пороги 2/4/5 минут.
+- Во время первого redeploy обнаружен конфликт Telegram long polling между старым и новым контейнерами. Startup исправлен точечно: health больше не блокирует замену живого контейнера, а Telegram polling повторяет подключение вместо завершения процесса. Следующий deploy и минутный polling цикл прошли без ошибок.
+- Дмитрию отправлен тестовый WallPanels alert по реальному Email conversation с кнопкой `Open Conversation`.
 
 ## Изменённые файлы
 
