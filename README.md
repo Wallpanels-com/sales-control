@@ -23,6 +23,8 @@ The service runs 24/7 on Railway, reads HighLevel using read-only Private Integr
 
 The backend polls `conversations/messages/export` with overlap + de-duplication. Email is fetched separately because HighLevel's export endpoint requires `channel=Email` for email messages.
 
+Verona Home and WallPanels use separate HighLevel `locationId` values and separate company rows in Supabase. WallPanels may be disabled safely by leaving its token empty; production currently enables both companies.
+
 ## Staff
 - Kate Lukovych — `@lukovychk` — sales
 - Kit Pavano — `@Irakli_Kit` — sales
