@@ -13,12 +13,21 @@ import { writeSystemLog } from './systemLogs.js';
 const testSessionStartedAt = Date.now() - 60_000;
 const lastSuccessfulPollEnd = new Map<string, number>();
 
-function buildConversationUrl(template: string | undefined, values: { conversationId: string; contactId: string; locationId: string }): string | null {
+function buildConversationUrl(template: string | undefined, values: { conversationId: string; contactId: string; locationId: string; contactName: string }): string | null {
   if (!template) return null;
-  return template
+  const rendered = template
     .replaceAll('{conversationId}', encodeURIComponent(values.conversationId))
     .replaceAll('{contactId}', encodeURIComponent(values.contactId))
-    .replaceAll('{locationId}', encodeURIComponent(values.locationId));
+    .replaceAll('{locationId}', encodeURIComponent(values.locationId))
+    .replaceAll('{contactName}', encodeURIComponent(values.contactName));
+
+  // HighLevel falls back to the first visible inbox conversation when a deep-linked
+  // conversation is not already loaded in the current result set. Supplying the
+  // client name as the inbox query makes HighLevel load that result before applying
+  // the conversationId path, so the button consistently opens the intended thread.
+  const url = new URL(rendered);
+  if (!url.searchParams.has('query')) url.searchParams.set('query', values.contactName);
+  return url.toString();
 }
 
 async function refreshGhlUsers(company: typeof companies[number]) {
@@ -200,7 +209,8 @@ async function evaluateAlerts(): Promise<void> {
 
     const contactName = await getContactName(actualCompany, state.contact_id);
     const url = buildConversationUrl(actualCompany.conversationUrlTemplate, {
-      conversationId: state.conversation_id, contactId: state.contact_id, locationId: actualCompany.locationId
+      conversationId: state.conversation_id, contactId: state.contact_id,
+      locationId: actualCompany.locationId, contactName
     });
     for (const threshold of dueThresholds) {
       const unique = new Map<string, any>();
