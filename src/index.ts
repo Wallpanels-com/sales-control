@@ -7,11 +7,33 @@ import { startMonitor } from './services/monitor.js';
 
 const app = Fastify({ logger: true });
 let ready = false;
+let telegramPolling = false;
+let shuttingDown = false;
 
-app.get('/health', async (_request, reply) => reply.code(ready ? 200 : 503).send({
-  ok: ready, service: 'wpvh-sales-control', testMode: env.TEST_MODE,
+app.get('/health', async (_request, reply) => reply.code(200).send({
+  ok: true, ready, telegramPolling, service: 'wpvh-sales-control', testMode: env.TEST_MODE,
   companies: companies.map(c => c.slug), thresholdsMinutes
 }));
+
+async function runTelegramPolling(): Promise<void> {
+  while (!shuttingDown) {
+    try {
+      await bot.start({
+        onStart: () => {
+          telegramPolling = true;
+          app.log.info('Telegram bot started in long-polling mode');
+        }
+      });
+      telegramPolling = false;
+      if (!shuttingDown) app.log.warn('Telegram polling stopped unexpectedly; retrying');
+    } catch (err) {
+      telegramPolling = false;
+      if (shuttingDown) return;
+      app.log.warn({ message: err instanceof Error ? err.message : 'unknown error' }, 'Telegram polling unavailable; retrying');
+    }
+    if (!shuttingDown) await new Promise(resolve => setTimeout(resolve, 10_000));
+  }
+}
 
 async function main() {
   await app.listen({ port: env.PORT, host: '0.0.0.0' });
@@ -19,21 +41,17 @@ async function main() {
   await seedStaff();
 
   await bot.api.deleteWebhook({ drop_pending_updates: false }).catch(() => undefined);
-  void bot.start({ onStart: () => app.log.info('Telegram bot started in long-polling mode') })
-    .catch(err => {
-      ready = false;
-      app.log.error({ message: err instanceof Error ? err.message : 'unknown error' }, 'Telegram polling stopped');
-      process.exit(1);
-    });
+  void runTelegramPolling();
 
   await startMonitor();
   ready = true;
 }
 
 async function shutdown(signal: string) {
+  shuttingDown = true;
   ready = false;
   app.log.info({ signal }, 'Graceful shutdown started');
-  bot.stop();
+  if (telegramPolling) bot.stop();
   await app.close();
   process.exit(0);
 }
