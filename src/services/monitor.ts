@@ -1,10 +1,11 @@
-import { companies, env, thresholdsMinutes } from '../config.js';
+import { companies, env, productionCutoverAtMs, thresholdsMinutes } from '../config.js';
 import { db } from '../db.js';
 import { HighLevelClient } from '../highlevel/client.js';
 import { sendSlaAlert } from '../telegram.js';
 import { ingestMessages } from './messageState.js';
 import { resolveResponsibleGhlUser } from './routing.js';
-import { getFallbackRecipients, getManagers, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
+import { getFallbackRecipients, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
+import { productionRecipients } from './recipients.js';
 import { writeSystemLog } from './systemLogs.js';
 
 // Test alerts only concern messages arriving in this run. The 24-hour bootstrap
@@ -156,6 +157,7 @@ async function evaluateAlerts(): Promise<void> {
 
     const waitingMinutes = Math.floor((now - Date.parse(state.latest_inbound_at)) / 60_000);
     if (env.TEST_MODE && Date.parse(state.latest_inbound_at) < testSessionStartedAt) continue;
+    if (!env.TEST_MODE && productionCutoverAtMs !== null && Date.parse(state.latest_inbound_at) < productionCutoverAtMs) continue;
     const dueThresholds = thresholdsMinutes.filter(t => waitingMinutes >= t);
     if (!dueThresholds.length) continue;
 
@@ -174,9 +176,9 @@ async function evaluateAlerts(): Promise<void> {
       if (testRecipient) recipients = [testRecipient];
       routingNote = `TEST MODE · production owner would be ${ownerName || route.ghlUserId || 'unassigned'}`;
     } else {
-      if (ownerStaff?.telegram_chat_id) recipients.push(ownerStaff);
+      const globalRecipients = await getFallbackRecipients();
+      recipients = productionRecipients(ownerStaff, globalRecipients);
       if (!ownerStaff?.telegram_chat_id) {
-        recipients.push(...await getFallbackRecipients());
         routingNote = `${ownerStaff ? 'Owner has not registered Telegram' : 'Owner mapping missing'} (${ownerName || route.ghlUserId || 'unassigned'}). Escalated to manager/admin.`;
         if (ownerStaff) await logRoutingIssueOnce(companyRow.id, state.id, state.conversation_id, state.contact_id, 'unregistered_owner', {
           ghlUserId: route.ghlUserId, ownerName, source: route.source
@@ -201,14 +203,8 @@ async function evaluateAlerts(): Promise<void> {
       conversationId: state.conversation_id, contactId: state.contact_id, locationId: actualCompany.locationId
     });
     for (const threshold of dueThresholds) {
-      // 90+ minutes: also manager. 120+: manager/admin as fallback escalation.
-      let thresholdRecipients = [...recipients];
-      if (!env.TEST_MODE && threshold >= 90) {
-        const managers = await getManagers();
-        thresholdRecipients = [...thresholdRecipients, ...managers];
-      }
       const unique = new Map<string, any>();
-      for (const r of thresholdRecipients) unique.set(r.id, r);
+      for (const r of recipients) unique.set(r.id, r);
 
       for (const recipient of unique.values()) {
         if (!recipient.telegram_chat_id) continue;

@@ -12,7 +12,8 @@ let shuttingDown = false;
 
 app.get('/health', async (_request, reply) => reply.code(200).send({
   ok: true, ready, telegramPolling, service: 'wpvh-sales-control', testMode: env.TEST_MODE,
-  companies: companies.map(c => c.slug), thresholdsMinutes
+  companies: companies.map(c => c.slug), thresholdsMinutes,
+  productionCutoverAt: env.PRODUCTION_CUTOVER_AT || null
 }));
 
 async function runTelegramPolling(): Promise<void> {

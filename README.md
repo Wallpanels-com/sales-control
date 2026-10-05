@@ -5,9 +5,9 @@ Telegram SLA control for **Verona Home + WallPanels**.
 The service runs 24/7 on Railway, reads HighLevel using read-only Private Integration Tokens, stores state in Supabase, and alerts staff in Telegram when a client is waiting too long for a human response.
 
 ## Production SLA
-- 60 minutes — responsible sales rep
-- 90 minutes — sales rep + management
-- 120 minutes — SLA breach
+- 60 minutes — responsible sales rep + Dmitry + Katherina
+- 90 minutes — responsible sales rep + Dmitry + Katherina
+- 120 minutes — SLA breach to responsible sales rep + Dmitry + Katherina
 
 ## Test mode
 `TEST_MODE=true` routes all notifications only to `@dimaqim` and uses `2,4,5` minute thresholds by default.

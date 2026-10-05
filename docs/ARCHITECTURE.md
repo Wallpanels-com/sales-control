@@ -27,9 +27,9 @@ A human outbound message is deliberately classified conservatively: its `userId`
 Production: 60 → 90 → 120 minutes.
 Test mode: 2 → 4 → 5 minutes.
 
-- 60m: responsible sales rep.
-- 90m: responsible sales rep + manager/admin escalation.
-- 120m: SLA breach, responsible sales rep + manager/admin.
+- 60m: responsible sales rep + Dmitry + Katherina.
+- 90m: responsible sales rep + Dmitry + Katherina.
+- 120m: SLA breach, responsible sales rep + Dmitry + Katherina.
 - TEST_MODE routes every alert only to `@dimaqim` while preserving the calculated production owner in the message.
 
 ## Routing

@@ -35,7 +35,8 @@ The Verona export returned `TYPE_SMS` and `TYPE_CALL` without `channel`, and `TY
 ## Phase 5 — production
 1. Change `TEST_MODE=false`.
 2. Set `SLA_THRESHOLDS_MINUTES=60,90,120`.
-3. Each sales rep and Katherina opens the bot and sends `/start` once.
-4. Push `main` to corporate GitHub.
-5. Railway auto-deploys from `main` with production Variables.
-6. Keep exactly one bot service replica because Telegram long polling must have one active consumer for this token.
+3. Set `PRODUCTION_CUTOVER_AT` to the approved UTC baseline timestamp.
+4. Each sales rep and Katherina opens the bot and sends `/start` once.
+5. Push `main` to corporate GitHub.
+6. Railway auto-deploys from `main` with production Variables.
+7. Keep exactly one bot service replica because Telegram long polling must have one active consumer for this token.

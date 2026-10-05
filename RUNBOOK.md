@@ -10,7 +10,7 @@ Add the approved name, Telegram username, and role to `config/staff.seed.json`. 
 
 ## Test mode and production cutover
 
-`TEST_MODE=true` sends all SLA alerts only to Dmitry's registered numeric chat ID at 2, 4, and 5 minutes. It ignores messages older than the current test service run so a 24-hour bootstrap does not flood Telegram. Set `TEST_MODE=false` only after the approved production cutover; then alerts go to the mapped sales owner at 60 minutes and to the owner plus Katherina at 90 and 120 minutes. Restart after a variable change. Keep one replica because Telegram uses long polling.
+`TEST_MODE=true` sends all SLA alerts only to Dmitry's registered numeric chat ID at 2, 4, and 5 minutes. It ignores messages older than the current test service run so a 24-hour bootstrap does not flood Telegram. Before the approved production cutover, resolve existing open incidents as a pre-production baseline and set `PRODUCTION_CUTOVER_AT` to that UTC timestamp. With `TEST_MODE=false`, every 60, 90, and 120 minute alert goes to the mapped sales owner, Dmitry, and Katherina. Restart after a variable change. Keep one replica because Telegram uses long polling.
 
 ## Diagnose a missed alert
 

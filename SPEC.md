@@ -12,9 +12,9 @@ The first production release is read-only toward HighLevel. It must never modify
 
 ## 3. SLA behavior
 Production:
-- T+60m: responsible sales rep
-- T+90m: responsible sales rep + manager
-- T+120m: responsible sales rep + manager; label as SLA BREACH
+- T+60m: responsible sales rep + Dmitry + Katherina
+- T+90m: responsible sales rep + Dmitry + Katherina
+- T+120m: responsible sales rep + Dmitry + Katherina; label as SLA BREACH
 
 Testing:
 - T+2m / T+4m / T+5m

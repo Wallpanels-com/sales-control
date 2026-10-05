@@ -20,6 +20,7 @@ const envSchema = z.object({
   SLA_THRESHOLDS_MINUTES: z.string().default('60,90,120'),
   TEST_MODE: z.string().default('true').transform(v => v.toLowerCase() === 'true'),
   TEST_SLA_THRESHOLDS_MINUTES: z.string().default('2,4,5'),
+  PRODUCTION_CUTOVER_AT: z.string().optional().default(''),
   VERONA_CONVERSATION_URL_TEMPLATE: z.string().optional().default(''),
   WALLPANELS_CONVERSATION_URL_TEMPLATE: z.string().optional().default(''),
   VERONA_PREFERRED_PIPELINE_ID: z.string().optional().default(''),
@@ -38,6 +39,13 @@ function parseThresholds(value: string): number[] {
 export const thresholdsMinutes = env.TEST_MODE
   ? parseThresholds(env.TEST_SLA_THRESHOLDS_MINUTES)
   : parseThresholds(env.SLA_THRESHOLDS_MINUTES);
+
+export const productionCutoverAtMs = env.PRODUCTION_CUTOVER_AT
+  ? Date.parse(env.PRODUCTION_CUTOVER_AT)
+  : null;
+if (productionCutoverAtMs !== null && !Number.isFinite(productionCutoverAtMs)) {
+  throw new Error('PRODUCTION_CUTOVER_AT must be a valid ISO timestamp');
+}
 
 export const companies: CompanyConfig[] = [
   {
