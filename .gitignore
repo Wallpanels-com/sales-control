@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Token*.docx
+Token*.txt
+*SECRETS*
+.supabase/
+supabase/.temp/
+.railway/
+.tools/
+.gh/
