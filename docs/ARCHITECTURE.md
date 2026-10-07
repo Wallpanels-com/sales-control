@@ -18,8 +18,10 @@ For each enabled company:
 2. Fetch recent Email messages with the same endpoint using `channel=Email`.
 3. Normalize SMS, Email, WhatsApp, Instagram, Facebook, WebChat, and GMB to a single `channel` field. Retain new text/attachment channels under their original type for review. Exclude calls and CRM activity records.
 4. Insert unseen messages into `message_events`.
-5. Incoming customer message opens a new `sla_incidents` record or advances the current open incident to the latest inbound message.
-6. Human outbound message after the inbound message resolves the state.
+5. Classify each new inbound message with Groq using the latest message and up to five prior conversation messages. Store the result and model metadata in `message_events`.
+6. Suppress a new SLA incident only when the model returns `needs_reply=false` with confidence `>= 0.90`. Any failure or uncertainty stays under SLA.
+7. An actionable incoming message opens a new `sla_incidents` record or advances the current open incident. A non-actionable follow-up never closes, replaces, or resets an existing actionable incident.
+8. Human outbound message after the actionable inbound message resolves the state.
 
 A human outbound message is deliberately classified conservatively: its `userId` must be a known HighLevel user and its source must be `app`, the manual source observed in the live Verona export. Workflow outbound messages often carry known user IDs, so other sources cannot by themselves prove a human reply.
 
@@ -50,4 +52,5 @@ Each employee must open the bot once and press `/start`. The bot stores the immu
 - Secrets live only in local `.env.local` and Railway Variables.
 - `.env*`, Token documents and secret files are git-ignored.
 - Supabase tables have RLS enabled and no public policies; only the backend secret key accesses them.
+- The Groq API key is read only from environment variables and is never written to Supabase or logs.
 - Codex must never inspect personal GitHub, personal Supabase, browser passwords, Keychain, or unrelated folders/accounts.

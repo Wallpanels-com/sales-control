@@ -19,4 +19,6 @@ Add the approved name, Telegram username, and role to `config/staff.seed.json`. 
 3. Check that a later outbound was a real human message with a known HighLevel `userId`; automated sources do not resolve the SLA. Inspect `ghl_users`, `staff_ghl_map`, `routing_issues`, and `assignment_mismatches` for an unmapped or conflicting owner.
 4. Check `alerts` for the inbound message ID, threshold, and recipient. If a row exists, Telegram accepted the send. If no row exists, inspect Telegram error logs and the recipient's registration. Alert rows persist across restarts to prevent normal resend.
 
+5. For an inbound message, inspect `ai_needs_reply`, `ai_confidence`, `ai_reason`, `ai_model`, and `ai_classified_at` in `message_events`. Only a high-confidence non-actionable result suppresses creation of a new incident. A `fallback:` reason means the message remained actionable because Groq was unavailable or its result could not be trusted.
+
 The Open Conversation button is enabled only when a verified company URL template is configured. Do not guess a HighLevel UI route.

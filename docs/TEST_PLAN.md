@@ -40,3 +40,10 @@ The Verona export returned `TYPE_SMS` and `TYPE_CALL` without `channel`, and `TY
 5. Push `main` to corporate GitHub.
 6. Railway auto-deploys from `main` with production Variables.
 7. Keep exactly one bot service replica because Telegram long polling must have one active consumer for this token.
+
+## AI classification
+1. Confirm pure acknowledgements such as `Thank you!`, `Thanks 👍`, `Okay, got it`, and `Perfect, thank you` return `needs_reply=false` with confidence at least `0.90`.
+2. Confirm messages containing a question or request remain actionable, including quote, price, installation, and product-option examples.
+3. Confirm API errors, timeouts, rate limits, invalid JSON, and confidence below `0.90` all result in SLA control.
+4. Start with an existing actionable incident, ingest a later non-actionable acknowledgement, and confirm the incident message and timer do not change.
+5. Run automatic tests with a mocked Telegram sender. If a real Telegram smoke test is required, enable `TEST_MODE=true` and verify that only Dmitry's stored numeric chat ID receives it. Restore `TEST_MODE=false` afterward.
