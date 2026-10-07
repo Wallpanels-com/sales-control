@@ -2,7 +2,7 @@ import { Bot, InlineKeyboard } from 'grammy';
 import { db } from './db.js';
 import { env } from './config.js';
 import { getStaffByTelegramUserId, getStaffByTelegramUsername } from './services/staff.js';
-import { escapeHtml, normalizeUsername, truncate } from './utils/text.js';
+import { escapeHtml, messagePreview, normalizeUsername } from './utils/text.js';
 
 export const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
@@ -94,6 +94,7 @@ export async function sendSlaAlert(args: {
   if (!args.recipient?.telegram_chat_id) return null;
 
   const severity = args.severity === 'breach' ? '🔴 SLA BREACH' : args.severity === 'warning' ? '🚨 SLA WARNING' : '⚠️ CLIENT WAITING';
+  const preview = messagePreview(args.body, args.channel);
   const lines = [
     `<b>${severity} — ${args.thresholdMinutes} MIN</b>`,
     `<b>${escapeHtml(args.companyName)}</b>`,
@@ -101,7 +102,7 @@ export async function sendSlaAlert(args: {
     args.ownerName ? `Owner: ${escapeHtml(args.ownerName)}` : null,
     args.channel ? `Channel: ${escapeHtml(args.channel.replace(/^TYPE_/, ''))}` : null,
     `Waiting: ${args.waitingMinutes} min`,
-    args.body ? `\n“${escapeHtml(truncate(args.body, 260))}”` : null,
+    preview ? `\n“${escapeHtml(preview)}”` : null,
     args.routingNote ? `\n<i>${escapeHtml(args.routingNote)}</i>` : null
   ].filter(Boolean).join('\n');
 

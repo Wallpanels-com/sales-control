@@ -68,13 +68,31 @@ async function getGhlUserName(companyId: string, ghlUserId?: string | null): Pro
   return data?.name || null;
 }
 
-async function getContactName(company: typeof companies[number], contactId: string): Promise<string> {
+function contactNameFrom(value: any): string | null {
+  if (!value) return null;
+  const contact = value.contact || value;
+  const candidate = contact.name || contact.fullName || contact.contactName
+    || [contact.firstName, contact.lastName].filter(Boolean).join(' ')
+    || contact.email || contact.phone;
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
+}
+
+async function getContactName(company: typeof companies[number], contactId: string, conversationId: string): Promise<string> {
+  const ghl = new HighLevelClient(company);
   try {
-    const contact = await new HighLevelClient(company).getContact(contactId);
-    return contact?.name || [contact?.firstName, contact?.lastName].filter(Boolean).join(' ') || contact?.email || contact?.phone || contactId;
-  } catch {
-    return contactId;
-  }
+    const name = contactNameFrom(await ghl.getContact(contactId));
+    if (name) return name;
+  } catch {}
+
+  try {
+    const name = contactNameFrom(await ghl.getConversation(conversationId));
+    if (name) return name;
+  } catch {}
+
+  // An opaque CRM ID is confusing to the recipient and must never be presented
+  // as a person's name. The conversation button still opens the exact contact.
+  console.warn('Contact display name unavailable', { company: company.slug, conversationId });
+  return 'Unknown contact';
 }
 
 async function claimAlert(state: any, threshold: number, staffId: string): Promise<string | null> {
@@ -207,7 +225,7 @@ async function evaluateAlerts(): Promise<void> {
       await logAssignmentMismatchOnce(companyRow.id, state, route);
     }
 
-    const contactName = await getContactName(actualCompany, state.contact_id);
+    const contactName = await getContactName(actualCompany, state.contact_id, state.conversation_id);
     const url = buildConversationUrl(actualCompany.conversationUrlTemplate, {
       conversationId: state.conversation_id, contactId: state.contact_id,
       locationId: actualCompany.locationId, contactName
