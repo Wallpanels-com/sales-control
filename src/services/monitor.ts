@@ -2,7 +2,7 @@ import { companies, env, productionCutoverAtMs, thresholdsMinutes } from '../con
 import { db } from '../db.js';
 import { HighLevelClient } from '../highlevel/client.js';
 import { sendSlaAlert } from '../telegram.js';
-import { ingestMessages } from './messageState.js';
+import { ingestMessages, recheckOpenProvisionalIncidents } from './messageState.js';
 import { resolveResponsibleGhlUser } from './routing.js';
 import { getFallbackRecipients, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
 import { productionRecipients } from './recipients.js';
@@ -287,12 +287,18 @@ export async function startMonitor(): Promise<void> {
     await refreshGhlUsers(company);
     await pollCompany(company);
   }
+  const initialRechecked = await recheckOpenProvisionalIncidents(companies);
+  if (initialRechecked) console.info('Rechecked provisional AI incidents', { count: initialRechecked });
   await evaluateAlerts();
 
   const pollLoop = async () => {
     for (const company of companies) {
       try { await pollCompany(company); } catch (e) { console.error('GHL poll failed', company.slug, e); }
     }
+    try {
+      const rechecked = await recheckOpenProvisionalIncidents(companies);
+      if (rechecked) console.info('Rechecked provisional AI incidents', { count: rechecked });
+    } catch (e) { console.error('Provisional AI incident recheck failed', e); }
     try { await evaluateAlerts(); } catch (e) { console.error('SLA evaluation failed', e); }
     setTimeout(pollLoop, env.POLL_INTERVAL_SECONDS * 1000);
   };

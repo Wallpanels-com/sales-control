@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planInboundIncident } from './messageState.js';
+import { isProvisionalAiReason, planInboundIncident, shouldResolveRecordedIncident } from './messageState.js';
 
 const actionableIncident = {
   id: 'incident-1',
@@ -33,5 +33,14 @@ describe('AI incident protection', () => {
   it('keeps low-confidence and error fallbacks actionable', () => {
     expect(planInboundIncident(null, thanksCandidate, { needsReply: false, confidence: 0.70 }, 0.90).action).toBe('upsert');
     expect(planInboundIncident(null, thanksCandidate, { needsReply: true, confidence: 0 }, 0.90).action).toBe('upsert');
+  });
+
+  it('retries provisional classifications and closes an already-open false positive', () => {
+    expect(isProvisionalAiReason('pre-ai-baseline')).toBe(true);
+    expect(isProvisionalAiReason('fallback: timeout')).toBe(true);
+    expect(isProvisionalAiReason('pure acknowledgement')).toBe(false);
+    expect(shouldResolveRecordedIncident('open', { needsReply: false, confidence: 0.95 }, 0.90)).toBe(true);
+    expect(shouldResolveRecordedIncident('open', { needsReply: true, confidence: 0.99 }, 0.90)).toBe(false);
+    expect(shouldResolveRecordedIncident('resolved', { needsReply: false, confidence: 0.99 }, 0.90)).toBe(false);
   });
 });

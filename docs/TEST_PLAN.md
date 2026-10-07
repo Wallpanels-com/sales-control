@@ -47,3 +47,4 @@ The Verona export returned `TYPE_SMS` and `TYPE_CALL` without `channel`, and `TY
 3. Confirm API errors, timeouts, rate limits, invalid JSON, and confidence below `0.90` all result in SLA control.
 4. Start with an existing actionable incident, ingest a later non-actionable acknowledgement, and confirm the incident message and timer do not change.
 5. Run automatic tests with a mocked Telegram sender. If a real Telegram smoke test is required, enable `TEST_MODE=true` and verify that only Dmitry's stored numeric chat ID receives it. Restore `TEST_MODE=false` afterward.
+6. Seed an already-open incident whose message has `pre-ai-baseline` or `fallback:*`, return a high-confidence `needs_reply=false` result on recheck, and confirm the incident resolves before alert evaluation.

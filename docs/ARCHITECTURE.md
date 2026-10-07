@@ -23,6 +23,8 @@ For each enabled company:
 7. An actionable incoming message opens a new `sla_incidents` record or advances the current open incident. A non-actionable follow-up never closes, replaces, or resets an existing actionable incident.
 8. Human outbound message after the actionable inbound message resolves the state.
 
+Open incidents with a provisional AI result (`pre-ai-baseline` or `fallback:*`) are rechecked before alert evaluation. If a later successful classification says that no reply is needed with confidence at or above the configured threshold, the existing incident is resolved before Telegram delivery. Transient AI failures remain safely actionable and are retried on later polling cycles.
+
 A human outbound message must have `source=app`, the manual source observed in live Verona and WallPanels exports. When HighLevel supplies `userId`, it must be a known HighLevel user. HighLevel omits `userId` on some real manual Email, Instagram and Facebook replies, so those `source=app` replies are accepted without it. Workflow/API/AI outbound messages use other sources and never resolve an incident, even when they carry a known user ID.
 
 ## SLA
