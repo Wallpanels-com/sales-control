@@ -27,15 +27,19 @@ describe('HighLevel message classification', () => {
     expect(normalizeChannel({ ...base, messageType:'TYPE_UNKNOWN', body:undefined, attachments:[] })).toBe(null);
   });
 
-  it('resolves only known users sending manual outbound messages', () => {
+  it('resolves manual app replies while rejecting automation and unknown supplied users', () => {
     const humans = new Set(['user-1']);
     for (const messageType of ['TYPE_SMS','TYPE_EMAIL','TYPE_WHATSAPP','TYPE_INSTAGRAM','TYPE_FACEBOOK','TYPE_WEBCHAT']) {
       expect(isHumanOutbound({ ...base, messageType, source:'app' }, humans)).toBe(true);
+    }
+    for (const messageType of ['TYPE_EMAIL','TYPE_INSTAGRAM','TYPE_FACEBOOK']) {
+      expect(isHumanOutbound({ ...base, messageType, source:'app', userId: undefined }, humans)).toBe(true);
     }
     expect(isHumanOutbound({ ...base, userId: 'unknown' }, humans)).toBe(false);
     expect(isHumanOutbound({ ...base, direction: 'inbound' }, humans)).toBe(false);
     for (const source of ['workflow','Campaign','bulk actions','api','conversation_ai','bot',undefined,'unknown']) {
       expect(isHumanOutbound({ ...base, source }, humans)).toBe(false);
+      expect(isHumanOutbound({ ...base, source, userId: undefined }, humans)).toBe(false);
     }
   });
 });

@@ -6,8 +6,11 @@ const CHANNELS: Record<string, string> = {
   WEBCHAT: 'WebChat', WEB_CHAT: 'WebChat', LIVECHAT: 'WebChat', LIVE_CHAT: 'WebChat',
   CHAT_WIDGET: 'WebChat', CHATWIDGET: 'WebChat', GMB: 'GMB', GOOGLE_MY_BUSINESS: 'GMB'
 };
-// Verona's live export identifies manually sent messages with source=app.
-// Keep this an allowlist: an unknown source cannot prove a human reply.
+// Live Verona and WallPanels exports identify manually sent messages with
+// source=app. HighLevel omits userId on some manual Email, Instagram and
+// Facebook replies, so a missing ID cannot disqualify an otherwise manual
+// reply. If HighLevel does provide an ID, it must belong to a known GHL user.
+// Keep source as an allowlist: workflow/API/AI messages must never resolve SLA.
 const HUMAN_SOURCES = new Set(['app']);
 
 export function normalizeChannel(m: GhlMessage): string | null {
@@ -31,5 +34,6 @@ export function isCustomerCommunication(m: GhlMessage): boolean {
 export function isHumanOutbound(m: GhlMessage, humans: Set<string>): boolean {
   if (m.direction !== 'outbound') return false;
   const source = (m.source || '').toLowerCase().replace(/[ -]/g, '_');
-  return HUMAN_SOURCES.has(source) && !!m.userId && humans.has(m.userId);
+  if (!HUMAN_SOURCES.has(source)) return false;
+  return !m.userId || humans.has(m.userId);
 }

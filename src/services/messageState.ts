@@ -107,7 +107,7 @@ export async function ingestMessages(company: CompanyConfig, messages: GhlMessag
       is_human_outbound: humanOutbound,
       date_added: m.dateAdded,
       raw: m
-    }, { onConflict: 'company_id,message_id', ignoreDuplicates: true });
+    }, { onConflict: 'company_id,message_id' });
     if (insertErr) throw insertErr;
 
     if (m.direction === 'inbound') {

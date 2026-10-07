@@ -19,7 +19,7 @@
 
 ## Read-only payload inspection (5 October 2026)
 
-The Verona export returned `TYPE_SMS` and `TYPE_CALL` without `channel`, and `TYPE_EMAIL` with `channel=Email`. A fresh 30-day metadata-only inspection returned 161 records: manual `app` outbound messages were observed for both SMS and Email, while workflow outbound SMS and Email frequently carried known `userId` values. This confirms that `userId` alone cannot prove a human reply and validates the conservative `source=app` rule for the two live channels. Calls are explicitly excluded. No WhatsApp, Instagram, Facebook, or WebChat sample was present in that period, so those aliases are covered by tests and the generic text/file/attachment fallback but await a live example.
+The Verona export returned `TYPE_SMS` and `TYPE_CALL` without `channel`, and `TYPE_EMAIL` with `channel=Email`. Live Verona and WallPanels records show that manual replies use `source=app`, while workflow messages use `source=workflow` even when they carry a known `userId`. HighLevel sometimes omits `userId` on manual Email, Instagram and Facebook replies. Human reply detection therefore requires `source=app`; a supplied `userId` must be known, while an omitted `userId` is accepted. Calls remain explicitly excluded.
 
 ## Phase 3 — owner routing test
 1. Keep TEST_MODE on.

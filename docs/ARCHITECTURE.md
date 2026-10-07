@@ -23,7 +23,7 @@ For each enabled company:
 7. An actionable incoming message opens a new `sla_incidents` record or advances the current open incident. A non-actionable follow-up never closes, replaces, or resets an existing actionable incident.
 8. Human outbound message after the actionable inbound message resolves the state.
 
-A human outbound message is deliberately classified conservatively: its `userId` must be a known HighLevel user and its source must be `app`, the manual source observed in the live Verona export. Workflow outbound messages often carry known user IDs, so other sources cannot by themselves prove a human reply.
+A human outbound message must have `source=app`, the manual source observed in live Verona and WallPanels exports. When HighLevel supplies `userId`, it must be a known HighLevel user. HighLevel omits `userId` on some real manual Email, Instagram and Facebook replies, so those `source=app` replies are accepted without it. Workflow/API/AI outbound messages use other sources and never resolve an incident, even when they carry a known user ID.
 
 ## SLA
 Production: 60 → 90 → 120 minutes.
