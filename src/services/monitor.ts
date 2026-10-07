@@ -226,9 +226,10 @@ async function evaluateAlerts(): Promise<void> {
     }
 
     const contactName = await getContactName(actualCompany, state.contact_id, state.conversation_id);
+    const contactSearchTerm = contactName === 'Unknown contact' ? state.contact_id : contactName;
     const url = buildConversationUrl(actualCompany.conversationUrlTemplate, {
       conversationId: state.conversation_id, contactId: state.contact_id,
-      locationId: actualCompany.locationId, contactName
+      locationId: actualCompany.locationId, contactName: contactSearchTerm
     });
     for (const threshold of dueThresholds) {
       const unique = new Map<string, any>();
