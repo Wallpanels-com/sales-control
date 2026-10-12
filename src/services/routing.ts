@@ -14,14 +14,16 @@ export async function resolveResponsibleGhlUser(
 ): Promise<{ ghlUserId: string | null; source: string; mismatch?: { opportunityOwner?: string; conversationOwner?: string; contactOwner?: string } }> {
   const ghl = new HighLevelClient(company);
   const [opps, conversation, contact] = await Promise.all([
-    ghl.getOpenOpportunities(contactId).catch(error => {
+    // Alert evaluation must never block message polling for minutes when GHL is
+    // rate-limited. One attempt is enough here; the next SLA threshold retries.
+    ghl.getOpenOpportunities(contactId, 1).catch(error => {
       console.warn('Opportunity owner lookup failed; using conversation/contact fallback', {
         company: company.slug, error: error instanceof Error ? error.message : 'unknown'
       });
       return [];
     }),
-    ghl.getConversation(conversationId).catch(() => null),
-    ghl.getContact(contactId).catch(() => null)
+    ghl.getConversation(conversationId, 1).catch(() => null),
+    ghl.getContact(contactId, 1).catch(() => null)
   ]);
 
   const sortedOpps = [...opps].sort((a, b) =>

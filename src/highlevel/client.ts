@@ -5,13 +5,14 @@ const BASE = 'https://services.leadconnectorhq.com';
 export class HighLevelClient {
   constructor(private readonly company: CompanyConfig) {}
 
-  private async request<T>(path: string, opts?: { version?: string; query?: Record<string, string | number | undefined> }): Promise<T> {
+  private async request<T>(path: string, opts?: { version?: string; query?: Record<string, string | number | undefined>; maxAttempts?: number }): Promise<T> {
     const url = new URL(`${BASE}${path}`);
     for (const [key, val] of Object.entries(opts?.query || {})) {
       if (val !== undefined && val !== '') url.searchParams.set(key, String(val));
     }
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
+    const maxAttempts = opts?.maxAttempts ?? 5;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const res = await fetch(url, {
           method: 'GET',
@@ -32,7 +33,7 @@ export class HighLevelClient {
       } catch (error) {
         if (error instanceof Error && error.message.startsWith('GHL ') && !/GHL (429|5\d\d)/.test(error.message)) throw error;
         lastError = error instanceof Error ? error : new Error('GHL network error');
-        if (attempt < 4) await new Promise(resolve => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 12000)));
+        if (attempt < maxAttempts - 1) await new Promise(resolve => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 12000)));
       }
     }
     throw lastError || new Error(`GHL request failed: ${path}`);
@@ -78,20 +79,21 @@ export class HighLevelClient {
     throw new Error('GHL message export pagination limit reached; refusing to skip messages');
   }
 
-  async getConversation(conversationId: string): Promise<ConversationDetails> {
-    return this.request(`/conversations/${encodeURIComponent(conversationId)}`);
+  async getConversation(conversationId: string, maxAttempts = 5): Promise<ConversationDetails> {
+    return this.request(`/conversations/${encodeURIComponent(conversationId)}`, { maxAttempts });
   }
 
-  async getContact(contactId: string): Promise<any> {
-    const data = await this.request<{ contact: any }>(`/contacts/${encodeURIComponent(contactId)}`);
+  async getContact(contactId: string, maxAttempts = 5): Promise<any> {
+    const data = await this.request<{ contact: any }>(`/contacts/${encodeURIComponent(contactId)}`, { maxAttempts });
     return data.contact;
   }
 
-  async getOpenOpportunities(contactId: string): Promise<GhlOpportunity[]> {
+  async getOpenOpportunities(contactId: string, maxAttempts = 5): Promise<GhlOpportunity[]> {
     const opportunities: GhlOpportunity[] = [];
     for (let page = 1; page <= 100; page++) {
       const data = await this.request<{ opportunities: GhlOpportunity[]; meta?: { total?: number } }>('/opportunities/search', {
-        query: { locationId: this.company.locationId, contactId, status: 'open', limit: 100, page }
+        query: { locationId: this.company.locationId, contactId, status: 'open', limit: 100, page },
+        maxAttempts
       });
       opportunities.push(...(data.opportunities || []));
       if ((data.opportunities || []).length < 100 || (data.meta?.total !== undefined && opportunities.length >= data.meta.total)) return opportunities;

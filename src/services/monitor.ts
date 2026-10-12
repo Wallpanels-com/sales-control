@@ -2,6 +2,7 @@ import { companies, env, productionCutoverAtMs, thresholdsMinutes } from '../con
 import { db } from '../db.js';
 import { HighLevelClient } from '../highlevel/client.js';
 import { sendSlaAlert } from '../telegram.js';
+import { buildConversationUrl, incidentStillAllowsAlert } from './alertSafety.js';
 import { ingestMessages, recheckOpenProvisionalIncidents } from './messageState.js';
 import { resolveResponsibleGhlUser } from './routing.js';
 import { getFallbackRecipients, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
@@ -12,23 +13,6 @@ import { writeSystemLog } from './systemLogs.js';
 // import must not notify Dmitry for every historical conversation.
 const testSessionStartedAt = Date.now() - 60_000;
 const lastSuccessfulPollEnd = new Map<string, number>();
-
-function buildConversationUrl(template: string | undefined, values: { conversationId: string; contactId: string; locationId: string; contactName: string }): string | null {
-  if (!template) return null;
-  const rendered = template
-    .replaceAll('{conversationId}', encodeURIComponent(values.conversationId))
-    .replaceAll('{contactId}', encodeURIComponent(values.contactId))
-    .replaceAll('{locationId}', encodeURIComponent(values.locationId))
-    .replaceAll('{contactName}', encodeURIComponent(values.contactName));
-
-  // HighLevel falls back to the first visible inbox conversation when a deep-linked
-  // conversation is not already loaded in the current result set. Supplying the
-  // client name as the inbox query makes HighLevel load that result before applying
-  // the conversationId path, so the button consistently opens the intended thread.
-  const url = new URL(rendered);
-  if (!url.searchParams.has('query')) url.searchParams.set('query', values.contactName);
-  return url.toString();
-}
 
 async function refreshGhlUsers(company: typeof companies[number]) {
   const ghl = new HighLevelClient(company);
@@ -77,33 +61,42 @@ function contactNameFrom(value: any): string | null {
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
 }
 
-async function getContactName(company: typeof companies[number], contactId: string, conversationId: string): Promise<string> {
+function messageSenderName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const candidate = value.trim();
+  return candidate && candidate.length <= 200 ? candidate : null;
+}
+
+async function getContactName(company: typeof companies[number], state: any): Promise<string> {
+  const { data: event, error: eventError } = await db.from('message_events')
+    .select('raw').eq('company_id', state.company_id)
+    .eq('message_id', state.latest_inbound_message_id).maybeSingle();
+  if (eventError) throw eventError;
+  const sender = messageSenderName((event?.raw as any)?.from);
+  // Social and email exports contain a useful customer name/address already.
+  // For SMS, prefer the CRM contact name but retain the phone as a safe fallback.
+  if (sender && !/^\+?[\d\s().-]{7,}$/.test(sender)) return sender;
+
   const ghl = new HighLevelClient(company);
   try {
-    const name = contactNameFrom(await ghl.getContact(contactId));
+    const name = contactNameFrom(await ghl.getContact(state.contact_id, 1));
     if (name) return name;
   } catch {}
 
   try {
-    const name = contactNameFrom(await ghl.getConversation(conversationId));
+    const name = contactNameFrom(await ghl.getConversation(state.conversation_id, 1));
     if (name) return name;
   } catch {}
+
+  if (sender) return sender;
 
   // An opaque CRM ID is confusing to the recipient and must never be presented
   // as a person's name. The conversation button still opens the exact contact.
-  console.warn('Contact display name unavailable', { company: company.slug, conversationId });
+  console.warn('Contact display name unavailable', { company: company.slug, conversationId: state.conversation_id });
   return 'Unknown contact';
 }
 
-async function claimAlert(state: any, threshold: number, staffId: string): Promise<string | null> {
-  const { data: existing, error: lookupError } = await db.from('alerts')
-    .select('id,delivery_status,last_attempt_at,attempt_count')
-    .eq('incident_id', state.id)
-    .eq('inbound_message_id', state.latest_inbound_message_id)
-    .eq('threshold_minutes', threshold)
-    .eq('recipient_staff_id', staffId)
-    .maybeSingle();
-  if (lookupError) throw lookupError;
+async function claimAlert(state: any, threshold: number, staffId: string, existing?: any): Promise<string | null> {
   if (existing) {
     const recentAttempt = Date.now() - Date.parse(existing.last_attempt_at) < 10 * 60_000;
     if (existing.delivery_status === 'sent' || (existing.delivery_status === 'sending' && recentAttempt)) return null;
@@ -173,7 +166,41 @@ async function logAssignmentMismatchOnce(companyId: string, state: any, route: a
 async function evaluateAlerts(): Promise<void> {
   const { data: states, error } = await db.from('sla_incidents').select('*').eq('status', 'open');
   if (error) throw error;
-  const now = Date.now();
+  if (!states?.length) return;
+
+  const incidentIds = states.map((state: any) => state.id);
+  const { data: existingAlerts, error: alertsError } = await db.from('alerts')
+    .select('id,incident_id,inbound_message_id,threshold_minutes,recipient_staff_id,delivery_status,last_attempt_at,attempt_count')
+    .in('incident_id', incidentIds);
+  if (alertsError) throw alertsError;
+  const alertByKey = new Map((existingAlerts || []).map((alert: any) => [
+    `${alert.incident_id}:${alert.inbound_message_id}:${alert.threshold_minutes}:${alert.recipient_staff_id}`,
+    alert
+  ]));
+  const thresholdAlerts = (state: any, threshold: number) => (existingAlerts || []).filter((alert: any) =>
+    alert.incident_id === state.id
+    && alert.inbound_message_id === state.latest_inbound_message_id
+    && alert.threshold_minutes === threshold);
+  const isCoveredBySentThreshold = (state: any, threshold: number, staffId: string) =>
+    [...alertByKey.values()].some((alert: any) =>
+      alert.incident_id === state.id
+      && alert.inbound_message_id === state.latest_inbound_message_id
+      && alert.recipient_staff_id === staffId
+      && alert.threshold_minutes >= threshold
+      && alert.delivery_status === 'sent');
+  const shouldAttemptRecipient = (state: any, threshold: number, recipient: any) => {
+    if (!recipient.telegram_chat_id || isCoveredBySentThreshold(state, threshold, recipient.id)) return false;
+    const rows = thresholdAlerts(state, threshold);
+    const existing = alertByKey.get(`${state.id}:${state.latest_inbound_message_id}:${threshold}:${recipient.id}`) as any;
+    // Once delivery of a threshold has started, do not backfill it to people
+    // who register later. Existing failed attempts remain retryable.
+    if (rows.length && !existing) return false;
+    if (!existing) return true;
+    const recentAttempt = Date.now() - Date.parse(existing.last_attempt_at) < 10 * 60_000;
+    return existing.delivery_status !== 'sent' && !(existing.delivery_status === 'sending' && recentAttempt);
+  };
+
+  const globalRecipients = env.TEST_MODE ? [] : await getFallbackRecipients();
 
   for (const state of states || []) {
     try {
@@ -182,16 +209,38 @@ async function evaluateAlerts(): Promise<void> {
     const actualCompany = companies.find(c => c.slug === row?.slug);
     if (!actualCompany) continue;
 
-    const waitingMinutes = Math.floor((now - Date.parse(state.latest_inbound_at)) / 60_000);
+    const waitingMinutes = Math.floor((Date.now() - Date.parse(state.latest_inbound_at)) / 60_000);
     if (env.TEST_MODE && Date.parse(state.latest_inbound_at) < testSessionStartedAt) continue;
     if (!env.TEST_MODE && productionCutoverAtMs !== null && Date.parse(state.latest_inbound_at) < productionCutoverAtMs) continue;
     const dueThresholds = thresholdsMinutes.filter(t => waitingMinutes >= t);
     if (!dueThresholds.length) continue;
 
     const companyRow = await getCompanyRow(actualCompany.slug);
-    const route = await resolveResponsibleGhlUser(actualCompany, state.conversation_id, state.contact_id);
+    let route = {
+      ghlUserId: state.responsible_ghl_user_id || null,
+      source: state.responsible_source || 'unassigned',
+      mismatch: undefined as any
+    };
+    let ownerStaff = await getStaffByGhlUser(actualCompany.slug, route.ghlUserId);
+    let preliminaryRecipients = env.TEST_MODE
+      ? [await getTestRecipient()].filter(Boolean)
+      : productionRecipients(ownerStaff, globalRecipients);
+    const needsWork = dueThresholds.some(threshold =>
+      preliminaryRecipients.some((recipient: any) => shouldAttemptRecipient(state, threshold, recipient)));
+    if (!needsWork) continue;
+
+    // Refresh routing only when a threshold actually needs delivery. The old
+    // implementation repeated three live GHL lookups for every open incident
+    // every minute, exhausted the API limit and delayed reply ingestion.
+    const hasNewThreshold = dueThresholds.some(threshold => !(existingAlerts || []).some((alert: any) =>
+      alert.incident_id === state.id
+      && alert.inbound_message_id === state.latest_inbound_message_id
+      && alert.threshold_minutes === threshold));
+    if (hasNewThreshold) {
+      route = await resolveResponsibleGhlUser(actualCompany, state.conversation_id, state.contact_id) as typeof route;
+      ownerStaff = await getStaffByGhlUser(actualCompany.slug, route.ghlUserId);
+    }
     const ownerName = await getGhlUserName(companyRow.id, route.ghlUserId);
-    const ownerStaff = await getStaffByGhlUser(actualCompany.slug, route.ghlUserId);
     if (!ownerStaff) await logRoutingIssueOnce(companyRow.id, state.id, state.conversation_id, state.contact_id, 'unmapped_owner', {
       ghlUserId: route.ghlUserId, ownerName, source: route.source
     });
@@ -203,7 +252,6 @@ async function evaluateAlerts(): Promise<void> {
       if (testRecipient) recipients = [testRecipient];
       routingNote = `TEST MODE · production owner would be ${ownerName || route.ghlUserId || 'unassigned'}`;
     } else {
-      const globalRecipients = await getFallbackRecipients();
       recipients = productionRecipients(ownerStaff, globalRecipients);
       if (!ownerStaff?.telegram_chat_id) {
         routingNote = `${ownerStaff ? 'Owner has not registered Telegram' : 'Owner mapping missing'} (${ownerName || route.ghlUserId || 'unassigned'}). Escalated to manager/admin.`;
@@ -225,19 +273,29 @@ async function evaluateAlerts(): Promise<void> {
       await logAssignmentMismatchOnce(companyRow.id, state, route);
     }
 
-    const contactName = await getContactName(actualCompany, state.contact_id, state.conversation_id);
-    const contactSearchTerm = contactName === 'Unknown contact' ? state.contact_id : contactName;
+    const contactName = await getContactName(actualCompany, state);
     const url = buildConversationUrl(actualCompany.conversationUrlTemplate, {
       conversationId: state.conversation_id, contactId: state.contact_id,
-      locationId: actualCompany.locationId, contactName: contactSearchTerm
+      locationId: actualCompany.locationId, contactName
     });
-    for (const threshold of dueThresholds) {
+    // Process the most severe due threshold first. A successful 120-minute
+    // breach covers missed 60/90 notifications after downtime without spam.
+    for (const threshold of [...dueThresholds].sort((a, b) => b - a)) {
       const unique = new Map<string, any>();
       for (const r of recipients) unique.set(r.id, r);
 
       for (const recipient of unique.values()) {
-        if (!recipient.telegram_chat_id) continue;
-        const alertId = await claimAlert(state, threshold, recipient.id);
+        if (!shouldAttemptRecipient(state, threshold, recipient)) continue;
+        // Polling runs independently from alert evaluation. Re-read the incident
+        // immediately before every send so a reply ingested meanwhile cancels
+        // all remaining notifications from this stale evaluation snapshot.
+        const { data: fresh, error: freshError } = await db.from('sla_incidents')
+          .select('status,latest_inbound_message_id').eq('id', state.id).single();
+        if (freshError) throw freshError;
+        if (!incidentStillAllowsAlert(state, fresh)) break;
+
+        const key = `${state.id}:${state.latest_inbound_message_id}:${threshold}:${recipient.id}`;
+        const alertId = await claimAlert(state, threshold, recipient.id, alertByKey.get(key));
         if (!alertId) continue;
 
         try {
@@ -261,6 +319,17 @@ async function evaluateAlerts(): Promise<void> {
             error_code: null
           }).eq('id', alertId);
           if (alertUpdateError) throw alertUpdateError;
+          const sentAlert = {
+            ...(alertByKey.get(key) as any || {}), id: alertId,
+            incident_id: state.id,
+            inbound_message_id: state.latest_inbound_message_id,
+            threshold_minutes: threshold,
+            recipient_staff_id: recipient.id,
+            delivery_status: 'sent',
+            last_attempt_at: new Date().toISOString()
+          };
+          alertByKey.set(key, sentAlert);
+          if (!(existingAlerts || []).some((alert: any) => alert.id === alertId)) (existingAlerts || []).push(sentAlert);
         } catch (sendError) {
           const errorCode = sendError instanceof Error ? sendError.message.slice(0, 120) : 'unknown';
           await db.from('alerts').update({ delivery_status: 'failed', error_code: errorCode }).eq('id', alertId);
@@ -299,10 +368,17 @@ export async function startMonitor(): Promise<void> {
       const rechecked = await recheckOpenProvisionalIncidents(companies);
       if (rechecked) console.info('Rechecked provisional AI incidents', { count: rechecked });
     } catch (e) { console.error('Provisional AI incident recheck failed', e); }
-    try { await evaluateAlerts(); } catch (e) { console.error('SLA evaluation failed', e); }
     setTimeout(pollLoop, env.POLL_INTERVAL_SECONDS * 1000);
   };
   setTimeout(pollLoop, env.POLL_INTERVAL_SECONDS * 1000);
+
+  // Keep evaluation separate so slow/rate-limited owner lookups can never stop
+  // ingestion of a real human reply.
+  const alertLoop = async () => {
+    try { await evaluateAlerts(); } catch (e) { console.error('SLA evaluation failed', e); }
+    setTimeout(alertLoop, env.POLL_INTERVAL_SECONDS * 1000);
+  };
+  setTimeout(alertLoop, Math.max(10_000, env.POLL_INTERVAL_SECONDS * 500));
 
   setInterval(async () => {
     for (const company of companies) {
