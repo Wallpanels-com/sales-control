@@ -208,6 +208,9 @@ async function evaluateAlerts(): Promise<void> {
     if (rowErr) throw rowErr;
     const actualCompany = companies.find(c => c.slug === row?.slug);
     if (!actualCompany) continue;
+    // Never alert from a stale database snapshot after a restart. A temporary
+    // GHL outage/rate limit must be cleared by one successful poll first.
+    if (!lastSuccessfulPollEnd.has(actualCompany.slug)) continue;
 
     const waitingMinutes = Math.floor((Date.now() - Date.parse(state.latest_inbound_at)) / 60_000);
     if (env.TEST_MODE && Date.parse(state.latest_inbound_at) < testSessionStartedAt) continue;
@@ -353,12 +356,28 @@ async function evaluateAlerts(): Promise<void> {
 
 export async function startMonitor(): Promise<void> {
   for (const company of companies) {
-    await refreshGhlUsers(company);
-    await pollCompany(company);
+    try {
+      await refreshGhlUsers(company);
+    } catch (e) {
+      console.error('Initial GHL user refresh failed', company.slug, e);
+    }
+    try {
+      await pollCompany(company);
+    } catch (e) {
+      console.error('Initial GHL poll failed', company.slug, e);
+    }
   }
-  const initialRechecked = await recheckOpenProvisionalIncidents(companies);
-  if (initialRechecked) console.info('Rechecked provisional AI incidents', { count: initialRechecked });
-  await evaluateAlerts();
+  try {
+    const initialRechecked = await recheckOpenProvisionalIncidents(companies);
+    if (initialRechecked) console.info('Rechecked provisional AI incidents', { count: initialRechecked });
+  } catch (e) {
+    console.error('Initial provisional AI incident recheck failed', e);
+  }
+  try {
+    await evaluateAlerts();
+  } catch (e) {
+    console.error('Initial SLA evaluation failed', e);
+  }
 
   const pollLoop = async () => {
     for (const company of companies) {
