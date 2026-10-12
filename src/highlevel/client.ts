@@ -29,7 +29,7 @@ export class HighLevelClient {
         if (res.status !== 429 && res.status < 500) throw lastError;
         const retryAfter = Number(res.headers.get('retry-after') || '0');
         const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * 2 ** attempt, 12000);
-        await new Promise(resolve => setTimeout(resolve, Math.min(waitMs, 60_000)));
+        if (attempt < maxAttempts - 1) await new Promise(resolve => setTimeout(resolve, Math.min(waitMs, 60_000)));
       } catch (error) {
         if (error instanceof Error && error.message.startsWith('GHL ') && !/GHL (429|5\d\d)/.test(error.message)) throw error;
         lastError = error instanceof Error ? error : new Error('GHL network error');
@@ -39,15 +39,15 @@ export class HighLevelClient {
     throw lastError || new Error(`GHL request failed: ${path}`);
   }
 
-  async getLocation(): Promise<any> {
-    return this.request(`/locations/${encodeURIComponent(this.company.locationId)}`, { version: '2023-02-21' });
+  async getLocation(maxAttempts = 5): Promise<any> {
+    return this.request(`/locations/${encodeURIComponent(this.company.locationId)}`, { version: '2023-02-21', maxAttempts });
   }
 
-  async searchUsers(companyId: string): Promise<GhlUser[]> {
+  async searchUsers(companyId: string, maxAttempts = 5): Promise<GhlUser[]> {
     const users: GhlUser[] = [];
     for (let skip = 0; skip < 10_000; skip += 100) {
       const data = await this.request<{ users: GhlUser[]; count?: number }>('/users/search', {
-        query: { companyId, locationId: this.company.locationId, limit: 100, skip }
+        query: { companyId, locationId: this.company.locationId, limit: 100, skip }, maxAttempts
       });
       users.push(...(data.users || []));
       if ((data.users || []).length < 100 || (data.count !== undefined && users.length >= data.count)) return users;
@@ -55,7 +55,7 @@ export class HighLevelClient {
     throw new Error('GHL users pagination limit reached');
   }
 
-  async exportMessages(params: { startDate: string; endDate: string; email?: boolean; limit?: number }): Promise<GhlMessage[]> {
+  async exportMessages(params: { startDate: string; endDate: string; email?: boolean; limit?: number; maxAttempts?: number }): Promise<GhlMessage[]> {
     const all: GhlMessage[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < 20; page++) {
@@ -70,7 +70,8 @@ export class HighLevelClient {
           sortOrder: 'asc',
           limit: params.limit || 1000,
           cursor
-        }
+        },
+        maxAttempts: params.maxAttempts
       });
       all.push(...(data.messages || []));
       if (!data.nextCursor) return all;

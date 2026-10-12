@@ -13,17 +13,39 @@ import { writeSystemLog } from './systemLogs.js';
 // import must not notify Dmitry for every historical conversation.
 const testSessionStartedAt = Date.now() - 60_000;
 const lastSuccessfulPollEnd = new Map<string, number>();
+const rateLimitedUntil = new Map<string, number>();
+
+function isRateLimited(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith('GHL 429');
+}
+
+function isCoolingDown(company: typeof companies[number]): boolean {
+  return (rateLimitedUntil.get(company.slug) || 0) > Date.now();
+}
+
+function pauseForRateLimit(company: typeof companies[number]): void {
+  const until = Date.now() + env.GHL_RATE_LIMIT_COOLDOWN_SECONDS * 1000;
+  rateLimitedUntil.set(company.slug, until);
+  console.warn('GHL polling paused after rate limit', { company: company.slug, resumeAt: new Date(until).toISOString() });
+}
 
 async function refreshGhlUsers(company: typeof companies[number]) {
+  if (isCoolingDown(company)) return;
   const ghl = new HighLevelClient(company);
-  const locationPayload = await ghl.getLocation();
-  const companyId = locationPayload?.location?.companyId || locationPayload?.companyId;
-  if (!companyId) throw new Error(`${company.slug}: companyId not found from location`);
-  const users = await ghl.searchUsers(companyId);
-  await syncGhlUsers(company, users);
+  try {
+    const locationPayload = await ghl.getLocation(1);
+    const companyId = locationPayload?.location?.companyId || locationPayload?.companyId;
+    if (!companyId) throw new Error(`${company.slug}: companyId not found from location`);
+    const users = await ghl.searchUsers(companyId, 1);
+    await syncGhlUsers(company, users);
+  } catch (error) {
+    if (isRateLimited(error)) pauseForRateLimit(company);
+    throw error;
+  }
 }
 
 async function pollCompany(company: typeof companies[number]): Promise<void> {
+  if (isCoolingDown(company)) return;
   const ghl = new HighLevelClient(company);
   const now = Date.now();
   const overlapMs = Math.max(env.POLL_INTERVAL_SECONDS * 4, 300) * 1000;
@@ -31,12 +53,17 @@ async function pollCompany(company: typeof companies[number]): Promise<void> {
   const startDate = new Date(previousEnd ? previousEnd - overlapMs : now - env.INITIAL_LOOKBACK_HOURS * 3600_000).toISOString();
   const endDate = new Date(now).toISOString();
 
-  const [nonEmail, email] = await Promise.all([
-    ghl.exportMessages({ startDate, endDate, email: false }),
-    ghl.exportMessages({ startDate, endDate, email: true })
-  ]);
-  await ingestMessages(company, [...nonEmail, ...email]);
-  lastSuccessfulPollEnd.set(company.slug, now);
+  try {
+    const [nonEmail, email] = await Promise.all([
+      ghl.exportMessages({ startDate, endDate, email: false, maxAttempts: 1 }),
+      ghl.exportMessages({ startDate, endDate, email: true, maxAttempts: 1 })
+    ]);
+    await ingestMessages(company, [...nonEmail, ...email]);
+    lastSuccessfulPollEnd.set(company.slug, now);
+  } catch (error) {
+    if (isRateLimited(error)) pauseForRateLimit(company);
+    throw error;
+  }
 }
 
 async function getCompanyRow(slug: string) {

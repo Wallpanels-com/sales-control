@@ -26,4 +26,20 @@ describe('HighLevel export requests', () => {
     expect(urls[0].searchParams.has('channel')).toBe(false);
     expect(urls[1].searchParams.get('channel')).toBe('Email');
   });
+
+  it('does not retry a rate-limited export when one attempt is requested', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      headers: { get: () => null }
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HighLevelClient(company);
+    await expect(client.exportMessages({
+      startDate: '2026-10-05T00:00:00Z', endDate: '2026-10-05T01:00:00Z', maxAttempts: 1
+    })).rejects.toThrow('GHL 429');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

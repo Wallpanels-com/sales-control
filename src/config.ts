@@ -20,6 +20,7 @@ const envSchema = z.object({
   AI_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.90),
   AI_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30000).default(8000),
   POLL_INTERVAL_SECONDS: z.coerce.number().int().min(20).default(60),
+  GHL_RATE_LIMIT_COOLDOWN_SECONDS: z.coerce.number().int().min(60).max(86400).default(900),
   INITIAL_LOOKBACK_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   SLA_THRESHOLDS_MINUTES: z.string().default('60,90,120'),
   TEST_MODE: z.string().default('true').transform(v => v.toLowerCase() === 'true'),
