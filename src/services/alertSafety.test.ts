@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildConversationUrl, incidentStillAllowsAlert } from './alertSafety.js';
+import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert } from './alertSafety.js';
 
 const template = 'https://app.gohighlevel.com/v2/location/{locationId}/conversations/conversations/{conversationId}?category=team-inbox&tab=all';
 
@@ -17,6 +17,16 @@ describe('buildConversationUrl', () => {
       locationId: 'location', conversationId: 'conversation', contactId: 'opaque-contact-id', contactName: 'Unknown contact'
     })!);
     expect(url.searchParams.has('query')).toBe(false);
+  });
+});
+
+describe('fresh synchronization gate', () => {
+  it('blocks alerts during a failed, incomplete or stale sync', () => {
+    expect(syncAllowsAlert(undefined, true, false, 60, 200_000)).toBe(false);
+    expect(syncAllowsAlert(190_000, false, false, 60, 200_000)).toBe(false);
+    expect(syncAllowsAlert(190_000, true, true, 60, 200_000)).toBe(false);
+    expect(syncAllowsAlert(1, true, false, 60, 200_000)).toBe(false);
+    expect(syncAllowsAlert(190_000, true, false, 60, 200_000)).toBe(true);
   });
 });
 

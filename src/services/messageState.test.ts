@@ -38,6 +38,7 @@ describe('AI incident protection', () => {
   it('retries provisional classifications and closes an already-open false positive', () => {
     expect(isProvisionalAiReason('pre-ai-baseline')).toBe(true);
     expect(isProvisionalAiReason('fallback: timeout')).toBe(true);
+    expect(isProvisionalAiReason('fallback: non_text_message')).toBe(false);
     expect(isProvisionalAiReason('pure acknowledgement')).toBe(false);
     expect(shouldResolveRecordedIncident('open', { needsReply: false, confidence: 0.95 }, 0.90)).toBe(true);
     expect(shouldResolveRecordedIncident('open', { needsReply: true, confidence: 0.99 }, 0.90)).toBe(false);

@@ -3,6 +3,7 @@ import { db } from './db.js';
 import { env } from './config.js';
 import { getStaffByTelegramUserId, getStaffByTelegramUsername } from './services/staff.js';
 import { escapeHtml, messagePreview, normalizeUsername } from './utils/text.js';
+import { createRegistrationInvite, validRegistrationInvite } from './services/registration.js';
 
 export const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
@@ -35,21 +36,40 @@ bot.command('start', async (ctx) => {
   if (existingRegistration && String(existingRegistration.telegram_user_id) !== String(ctx.from.id)) {
     return ctx.reply('This staff record is already registered to another Telegram account. Contact Dmitry.');
   }
-  const { error } = await db.from('telegram_users').upsert({
+  if (!validRegistrationInvite(ctx.match.trim(), staff.id, username, env.TELEGRAM_BOT_TOKEN)) {
+    return ctx.reply('For secure registration, ask Dmitry or Katherina for your personal invitation link.');
+  }
+  const { error } = await db.from('telegram_users').insert({
     staff_id: staff.id,
     telegram_user_id: String(ctx.from?.id || ''),
     telegram_chat_id: String(ctx.chat.id),
     telegram_username: username,
     registered_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
-  }, { onConflict: 'staff_id' });
+  });
+  if (error?.code === '23505') return ctx.reply('This account has already been registered. Send /start again.');
   if (error) throw error;
   await ctx.reply(`Registered: ${staff.name} (${staff.role}). Notifications are enabled.`);
 });
 
+bot.command('invite', async (ctx) => {
+  if (ctx.chat.type !== 'private') return ctx.reply('Use this command in a private chat.');
+  const issuer = ctx.from ? await getStaffByTelegramUserId(ctx.from.id) : null;
+  if (!issuer || !['admin', 'manager'].includes(issuer.role)) return ctx.reply('Not authorized.');
+  const username = normalizeUsername(ctx.match.trim());
+  const staff = username ? await getStaffByTelegramUsername(username) : null;
+  if (!staff) return ctx.reply('Usage: /invite @username (approved staff only).');
+  const token = createRegistrationInvite(staff.id, username, env.TELEGRAM_BOT_TOKEN);
+  const me = await bot.api.getMe();
+  await ctx.reply(`Invitation for ${staff.name}, valid for 24 hours. Send it only to this employee:\nhttps://t.me/${me.username}?start=${token}`, {
+    link_preview_options: { is_disabled: true }
+  });
+});
+
 bot.command('status', async (ctx) => {
+  if (ctx.chat.type !== 'private') return ctx.reply('Use this command in a private chat.');
   const staff = ctx.from ? await getStaffByTelegramUserId(ctx.from.id) : null;
-  if (!staff) return ctx.reply('Not authorized.');
+  if (!staff || !['admin','manager'].includes(staff.role)) return ctx.reply('Not authorized.');
   const { count, error } = await db.from('sla_incidents')
     .select('*', { count: 'exact', head: true })
     .eq('status', 'open');
@@ -72,6 +92,7 @@ bot.command('status', async (ctx) => {
 });
 
 bot.command('test_alert', async (ctx) => {
+  if (ctx.chat.type !== 'private') return ctx.reply('Use this command in a private chat.');
   const staff = ctx.from ? await getStaffByTelegramUserId(ctx.from.id) : null;
   if (!staff || !['admin','manager'].includes(staff.role)) return ctx.reply('Not authorized.');
   await sendSlaAlert({ recipient: staff, companyName: 'Delivery test', contactName: 'Sample client', ownerName: staff.name,
@@ -128,4 +149,4 @@ export async function sendSlaAlert(args: {
   throw new Error('Telegram send failed');
 }
 
-bot.catch((err) => { console.error('Telegram bot update error', err.message); });
+bot.catch((err) => { console.error('Telegram bot update failed', { updateId: err.ctx.update.update_id }); });

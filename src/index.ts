@@ -31,7 +31,7 @@ async function runTelegramPolling(): Promise<void> {
     } catch (err) {
       telegramPolling = false;
       if (shuttingDown) return;
-      app.log.warn({ message: err instanceof Error ? err.message : 'unknown error' }, 'Telegram polling unavailable; retrying');
+      app.log.warn('Telegram polling unavailable; retrying');
     }
     if (!shuttingDown) await new Promise(resolve => setTimeout(resolve, 10_000));
   }

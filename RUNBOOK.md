@@ -6,7 +6,7 @@ Replace the affected value in the local ignored `.env.local` and the matching Ra
 
 ## Add or update staff
 
-Add the approved name, Telegram username, and role to `config/staff.seed.json`. Deploy, then have that person privately send `/start` to the bot. Registration binds the staff record to the numeric Telegram user ID; a different account cannot replace it with the same username. To change a registered account, an administrator must verify the person and clear that row's Telegram IDs in Supabase before the new account sends `/start`. Check `/status` for CRM mapping counts. Exact-name CRM matches are automatic; ambiguous or unmatched owners must be reviewed in `staff_ghl_map` and `routing_issues`.
+Add the approved name, Telegram username, and role to `config/staff.seed.json`. Deploy. A registered admin/manager sends `/invite @username` in a private chat with the bot, then forwards the returned 24-hour personal link only to that employee. Opening the link and pressing Start binds the numeric Telegram user ID. A bare `/start` cannot claim a new staff identity. Registration uses an atomic insert; a different account cannot replace an existing binding. To change a registered account, an administrator must verify the person and remove the old registration in Supabase before issuing a fresh invitation. Check `/status` privately for CRM mapping counts. Exact-name CRM matches are automatic; ambiguous or unmatched owners must be reviewed in `staff_ghl_map` and `routing_issues`.
 
 ## Test mode and production cutover
 

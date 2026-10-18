@@ -5,14 +5,14 @@
   "type": "module",
   "packageManager": "npm@10.9.4",
   "engines": {
-    "node": ">=22"
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run src"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.2",
@@ -22,11 +22,10 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@railway/cli": "5.63.1",
     "@types/node": "24.19.1",
     "supabase": "2.119.0",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
-    "vitest": "3.2.7"
+    "vitest": "5.0.5"
   }
 }

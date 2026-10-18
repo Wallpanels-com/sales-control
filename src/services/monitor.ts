@@ -2,7 +2,7 @@ import { companies, env, productionCutoverAtMs, thresholdsMinutes } from '../con
 import { db } from '../db.js';
 import { HighLevelClient } from '../highlevel/client.js';
 import { sendSlaAlert } from '../telegram.js';
-import { buildConversationUrl, incidentStillAllowsAlert } from './alertSafety.js';
+import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert } from './alertSafety.js';
 import { ingestMessages, recheckOpenProvisionalIncidents } from './messageState.js';
 import { resolveResponsibleGhlUser } from './routing.js';
 import { getFallbackRecipients, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
@@ -14,6 +14,13 @@ import { writeSystemLog } from './systemLogs.js';
 const testSessionStartedAt = Date.now() - 60_000;
 const lastSuccessfulPollEnd = new Map<string, number>();
 const rateLimitedUntil = new Map<string, number>();
+const pollHealthy = new Map<string, boolean>();
+const pollingCompanies = new Set<string>();
+
+function companyAllowsAlerts(slug: string): boolean {
+  return syncAllowsAlert(lastSuccessfulPollEnd.get(slug), pollHealthy.get(slug) === true,
+    pollingCompanies.has(slug), env.POLL_INTERVAL_SECONDS);
+}
 
 function isRateLimited(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith('GHL 429');
@@ -26,6 +33,7 @@ function isCoolingDown(company: typeof companies[number]): boolean {
 function pauseForRateLimit(company: typeof companies[number]): void {
   const until = Date.now() + env.GHL_RATE_LIMIT_COOLDOWN_SECONDS * 1000;
   rateLimitedUntil.set(company.slug, until);
+  pollHealthy.set(company.slug, false);
   console.warn('GHL polling paused after rate limit', { company: company.slug, resumeAt: new Date(until).toISOString() });
 }
 
@@ -46,6 +54,8 @@ async function refreshGhlUsers(company: typeof companies[number]) {
 
 async function pollCompany(company: typeof companies[number]): Promise<void> {
   if (isCoolingDown(company)) return;
+  pollingCompanies.add(company.slug);
+  pollHealthy.set(company.slug, false);
   const ghl = new HighLevelClient(company);
   const now = Date.now();
   const overlapMs = Math.max(env.POLL_INTERVAL_SECONDS * 4, 300) * 1000;
@@ -60,9 +70,12 @@ async function pollCompany(company: typeof companies[number]): Promise<void> {
     ]);
     await ingestMessages(company, [...nonEmail, ...email]);
     lastSuccessfulPollEnd.set(company.slug, now);
+    pollHealthy.set(company.slug, true);
   } catch (error) {
     if (isRateLimited(error)) pauseForRateLimit(company);
     throw error;
+  } finally {
+    pollingCompanies.delete(company.slug);
   }
 }
 
@@ -237,7 +250,7 @@ async function evaluateAlerts(): Promise<void> {
     if (!actualCompany) continue;
     // Never alert from a stale database snapshot after a restart. A temporary
     // GHL outage/rate limit must be cleared by one successful poll first.
-    if (!lastSuccessfulPollEnd.has(actualCompany.slug)) continue;
+    if (!companyAllowsAlerts(actualCompany.slug)) continue;
 
     const waitingMinutes = Math.floor((Date.now() - Date.parse(state.latest_inbound_at)) / 60_000);
     if (env.TEST_MODE && Date.parse(state.latest_inbound_at) < testSessionStartedAt) continue;
@@ -322,7 +335,7 @@ async function evaluateAlerts(): Promise<void> {
         const { data: fresh, error: freshError } = await db.from('sla_incidents')
           .select('status,latest_inbound_message_id').eq('id', state.id).single();
         if (freshError) throw freshError;
-        if (!incidentStillAllowsAlert(state, fresh)) break;
+        if (!companyAllowsAlerts(actualCompany.slug) || !incidentStillAllowsAlert(state, fresh)) break;
 
         const key = `${state.id}:${state.latest_inbound_message_id}:${threshold}:${recipient.id}`;
         const alertId = await claimAlert(state, threshold, recipient.id, alertByKey.get(key));

@@ -34,8 +34,9 @@ Verona Home and WallPanels use separate HighLevel `locationId` values and separa
 - Mary Razumna — `@mariarayme` — sales
 - Dmitry — `@dimaqim` — admin
 - Katherina — `@katherina_ostroglo` — manager
+- Igor Kravchenko — `@FoxionCEO` — admin (global alerts)
 
-Each person must send `/start` once before the bot can notify them.
+Registered staff are identified by numeric Telegram user ID, and delivery uses chat ID. For a new employee, an admin/manager sends `/invite @username` in the bot's private chat and forwards the returned personal link to that employee. The link is signed, bound to the approved staff record/username and valid for 24 hours. Opening it and pressing Start binds the numeric Telegram account. A bare `/start` cannot claim an unregistered staff identity. Existing registrations continue to work with `/start`.
 
 ## Local start
 Codex should perform these steps for the user. They are documented here for reproducibility:
@@ -65,7 +66,13 @@ See [RUNBOOK.md](RUNBOOK.md) for token rotation, staff registration, test-mode c
 
 ## Telegram commands
 - `/start` — approved staff registration
-- `/status` — service status
-- `/test_alert` — delivery smoke test for admin/manager
+- `/invite @username` — personal registration link (admin/manager, private chat)
+- `/status` — service status (admin/manager, private chat)
+- `/test_alert` — delivery smoke test for admin/manager in private chat
+
+## Security and synchronization
+Supabase tables have RLS enabled with no public access policies; only the backend secret key accesses customer data. Secrets and the Token document are excluded from Git. AI receives limited message context through Groq and cannot execute tools or change staff permissions. Message text is treated as untrusted input; AI failures keep the conservative SLA result.
+
+Alerts require a complete, successful, recent HighLevel sync for that company. They pause during ingestion, after failed polls, or when the snapshot is over three poll intervals old (minimum three minutes). A real human reply is rechecked in Supabase immediately before each delivery. HighLevel 429 responses pause that company for 15 minutes. Attachments without text remain under SLA but are not repeatedly submitted for AI classification.
 
 See `docs/ARCHITECTURE.md`, `docs/TEST_PLAN.md`, and `CODEX_PROMPT.md`.

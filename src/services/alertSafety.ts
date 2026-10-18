@@ -26,3 +26,8 @@ export function incidentStillAllowsAlert(
   return current.status === 'open'
     && current.latest_inbound_message_id === snapshot.latest_inbound_message_id;
 }
+
+export function syncAllowsAlert(lastSuccessfulEnd: number | undefined, healthy: boolean, polling: boolean, intervalSeconds: number, now = Date.now()): boolean {
+  return healthy && !polling && lastSuccessfulEnd !== undefined
+    && now - lastSuccessfulEnd <= Math.max(intervalSeconds * 3, 180) * 1000;
+}

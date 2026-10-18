@@ -84,7 +84,7 @@ export async function getStaffByTelegramUserId(userId: number) {
   const { data, error } = await db.from('staff').select('*')
     .eq('id', registration.staff_id).eq('active', true).maybeSingle();
   if (error) throw error;
-  return data ? { ...data, ...registration } : null;
+  return data ? { ...data, ...registration, id: data.id, telegram_registration_id: registration.id } : null;
 }
 
 export async function getTestRecipient() {

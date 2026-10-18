@@ -28,7 +28,9 @@ async function conversationContext(companyId: string, message: GhlMessage): Prom
 }
 
 export function isProvisionalAiReason(reason?: string | null): boolean {
-  return reason === 'pre-ai-baseline' || Boolean(reason?.startsWith('fallback:'));
+  // No text cannot become classifiable through repeated AI calls. Keep the
+  // conservative SLA result without rewriting it and logging every minute.
+  return reason === 'pre-ai-baseline' || Boolean(reason?.startsWith('fallback:') && reason !== 'fallback: non_text_message');
 }
 
 async function classifyInbound(
@@ -148,7 +150,7 @@ export async function ingestMessages(company: CompanyConfig, messages: GhlMessag
         processed++;
         continue;
       }
-      if (classification.reason.startsWith('fallback:')) {
+      if (classification.reason.startsWith('fallback:') && classification.reason !== 'fallback: non_text_message') {
         console.warn('AI classification used safe SLA fallback', { company: company.slug, reason: classification.reason });
       }
       if (recordedIncident) {
