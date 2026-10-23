@@ -10,14 +10,14 @@ import { FollowupAi } from './followupAi.js';
 import { followupRecipients } from './followupPolicy.js';
 import { renderFollowupNotification } from './followupTelegram.js';
 import { resolveResponsibleGhlUser } from './routing.js';
-import { getFallbackRecipients, getStaffByGhlUser, getTestRecipient } from './staff.js';
+import { getFallbackRecipients, getStaffByGhlUser, getStaffByTelegramUsername, getTestRecipient } from './staff.js';
 import { buildConversationUrl } from './alertSafety.js';
 
 const ai = new FollowupAi({ apiKey: env.FOLLOWUP_GROQ_API_KEY || env.GROQ_API_KEY,
   model: env.AI_MODEL, timeoutMs: Math.max(env.AI_TIMEOUT_MS, 15_000) });
 class DeliveryUncertain extends Error {}
 
-async function prepare(company: CompanyConfig, thread: any) {
+async function prepare(company: CompanyConfig, thread: any, requiredOwnerId?: string) {
   const ghl = new HighLevelClient(company);
   const conversation = await ghl.getConversation(thread.conversation_id, 1);
   if (conversation.locationId !== company.locationId || conversation.contactId !== thread.contact_id || conversation.deleted) return null;
@@ -37,6 +37,8 @@ async function prepare(company: CompanyConfig, thread: any) {
   if (!inbound.length) return null;
   const route = await resolveResponsibleGhlUser(company, thread.conversation_id, thread.contact_id);
   const owner = await getStaffByGhlUser(company.slug, route.ghlUserId);
+  // Targeted previews must verify the current owner before sharing any text with AI.
+  if (requiredOwnerId && owner?.id !== requiredOwnerId) return null;
   const { data: ghlUser, error: ghlError } = route.ghlUserId
     ? await db.from('ghl_users').select('name').eq('company_id', thread.company_id).eq('ghl_user_id', route.ghlUserId).maybeSingle()
     : { data: null, error: null };
@@ -149,15 +151,17 @@ export async function evaluateFollowups(companyAllowsAlerts: (slug: string) => b
   }
 }
 
-export async function sendOneFollowupPreview(): Promise<void> {
+export async function sendOneFollowupPreview(ownerUsername?: string): Promise<void> {
   if (env.FOLLOWUP_MODE !== 'preview') throw new Error('Explicit preview mode is required');
   const recipient = await getTestRecipient();
   if (!recipient?.telegram_chat_id) throw new Error('Dmitry has not registered');
+  const requiredOwner = ownerUsername ? await getStaffByTelegramUsername(ownerUsername) : null;
+  if (ownerUsername && !requiredOwner) throw new Error('Requested sales mapping not found');
   const { data: candidates, error } = await db.from('message_events')
     .select('company_id,conversation_id,contact_id,message_id,date_added,channel')
     .eq('is_human_outbound',true).lt('date_added',new Date(Date.now()-24*3600_000).toISOString())
     .gte('date_added',new Date(Date.now()-30*86400_000).toISOString())
-    .order('date_added',{ascending:false}).limit(80);
+    .order('date_added',{ascending:false}).limit(300);
   if (error) throw error;
   const { data: companyRows, error: companyError } = await db.from('companies').select('id,slug');
   if (companyError) throw companyError;
@@ -167,16 +171,18 @@ export async function sendOneFollowupPreview(): Promise<void> {
     const key = `${candidate.company_id}:${candidate.conversation_id}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    if (++checked > 12) break;
+    if (++checked > 40) break;
     const company = companies.find(company => company.slug === companyRows?.find(row => row.id===candidate.company_id)?.slug);
     if (!company) continue;
     try {
       const thread = { ...candidate, anchor_message_id: candidate.message_id, anchor_at: candidate.date_added,
         cycle_inbound_message_id: 'preview', stage: 1 };
-      const prepared = await prepare(company, thread);
+      const prepared = await prepare(company, thread, requiredOwner?.id);
       if (!prepared?.suggestion?.should_follow_up || prepared.suggestion.confidence < 0.9) continue;
       if (await deliver(company, thread, prepared, true) === 1) {
-        console.info('One follow-up preview delivered to Dmitry only', { company: company.slug, stage: 1 });
+        console.info('One follow-up preview delivered to Dmitry only', {
+          company: company.slug, stage: 1, contactName: prepared.contactName, ownerName: prepared.ownerName
+        });
         return;
       }
     } catch (error) {

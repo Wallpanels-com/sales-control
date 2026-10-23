@@ -1,6 +1,6 @@
 import { sendOneFollowupPreview } from './services/followups.js';
 
-sendOneFollowupPreview().catch(() => {
+sendOneFollowupPreview(process.argv[2]).catch(() => {
   console.error('Follow-up preview was not confirmed delivered; check configuration/API access before retrying.');
   process.exitCode = 1;
 });
