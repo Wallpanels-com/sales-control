@@ -54,8 +54,9 @@ async function prepare(company: CompanyConfig, thread: any, requiredOwnerId?: st
   const context = messages.slice(-12).map(message => ({ direction: message.direction,
     human: isHumanOutbound(message, humans), at: message.dateAdded,
     text: truncate(messagePreview(message.body, thread.channel) || '[attachment without text]', 600) }));
-  const suggestion = await ai.suggest(context, thread.stage);
-  return { suggestion, owner, ownerName: ghlUser?.name || owner?.name || 'Не назначен', contactName, url, anchor };
+  const ownerName = ghlUser?.name || owner?.name || 'Не назначен';
+  const suggestion = await ai.suggest(context, thread.stage, new Date(), {salesName:ownerName,customerName:contactName});
+  return { suggestion, owner, ownerName, contactName, url, anchor };
 }
 
 async function deliver(company: CompanyConfig, thread: any, prepared: NonNullable<Awaited<ReturnType<typeof prepare>>> & { demo?: boolean },
@@ -151,17 +152,24 @@ export async function evaluateFollowups(companyAllowsAlerts: (slug: string) => b
   }
 }
 
-export async function sendOneFollowupPreview(ownerUsername?: string): Promise<void> {
+export async function sendOneFollowupPreview(ownerUsername?: string, replaceMessageId?: string): Promise<void> {
   if (env.FOLLOWUP_MODE !== 'preview') throw new Error('Explicit preview mode is required');
   const recipient = await getTestRecipient();
   if (!recipient?.telegram_chat_id) throw new Error('Dmitry has not registered');
   const requiredOwner = ownerUsername ? await getStaffByTelegramUsername(ownerUsername) : null;
   if (ownerUsername && !requiredOwner) throw new Error('Requested sales mapping not found');
-  const { data: candidates, error } = await db.from('message_events')
+  const {data: replacement,error: replacementError} = replaceMessageId
+    ? await db.from('followup_notifications').select('id,company_id,conversation_id,anchor_message_id')
+      .eq('preview',true).eq('recipient_staff_id',recipient.id).eq('telegram_message_id',replaceMessageId).single()
+    : {data:null,error:null};
+  if (replacementError) throw replacementError;
+  let candidatesQuery = db.from('message_events')
     .select('company_id,conversation_id,contact_id,message_id,date_added,channel')
     .eq('is_human_outbound',true).lt('date_added',new Date(Date.now()-24*3600_000).toISOString())
-    .gte('date_added',new Date(Date.now()-30*86400_000).toISOString())
-    .order('date_added',{ascending:false}).limit(300);
+    .gte('date_added',new Date(Date.now()-30*86400_000).toISOString());
+  if (replacement) candidatesQuery = candidatesQuery.eq('company_id',replacement.company_id)
+    .eq('conversation_id',replacement.conversation_id).eq('message_id',replacement.anchor_message_id);
+  const { data: candidates, error } = await candidatesQuery.order('date_added',{ascending:false}).limit(300);
   if (error) throw error;
   const { data: companyRows, error: companyError } = await db.from('companies').select('id,slug');
   if (companyError) throw companyError;
@@ -179,6 +187,20 @@ export async function sendOneFollowupPreview(ownerUsername?: string): Promise<vo
         cycle_inbound_message_id: 'preview', stage: 1 };
       const prepared = await prepare(company, thread, requiredOwner?.id);
       if (!prepared?.suggestion?.should_follow_up || prepared.suggestion.confidence < 0.9) continue;
+      if (replacement && replaceMessageId) {
+        const rendered = renderFollowupNotification({companyName:company.displayName,contactName:prepared.contactName,
+          ownerName:prepared.ownerName,channel:thread.channel,stage:1,
+          waitingHours:(Date.now()-Date.parse(thread.anchor_at))/3600_000,draft:prepared.suggestion.draft,
+          conversationUrl:prepared.url,preview:true});
+        await bot.api.editMessageText(Number(recipient.telegram_chat_id),Number(replaceMessageId),rendered.text,
+          {parse_mode:'HTML',link_preview_options:{is_disabled:true},reply_markup:rendered.keyboard});
+        const {error: updateError} = await db.from('followup_notifications').update({draft:prepared.suggestion.draft,
+          ai_model:env.AI_MODEL,ai_reason:prepared.suggestion.reason}).eq('id',replacement.id);
+        if (updateError) throw updateError;
+        console.info('Existing preview corrected for Dmitry only', {company:company.slug,contactName:prepared.contactName,
+          ownerName:prepared.ownerName});
+        return;
+      }
       if (await deliver(company, thread, prepared, true) === 1) {
         console.info('One follow-up preview delivered to Dmitry only', {
           company: company.slug, stage: 1, contactName: prepared.contactName, ownerName: prepared.ownerName
