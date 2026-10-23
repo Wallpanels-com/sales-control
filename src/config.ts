@@ -16,6 +16,9 @@ const envSchema = z.object({
   WALLPANELS_LOCATION_ID: z.string().optional().default(''),
   WALLPANELS_API_TOKEN: z.string().optional().default(''),
   GROQ_API_KEY: z.string().optional().default(''),
+  FOLLOWUP_GROQ_API_KEY: z.string().optional().default(''),
+  FOLLOWUP_MODE: z.enum(['off', 'preview', 'production']).default('off'),
+  FOLLOWUP_CUTOVER_AT: z.string().optional().default(''),
   AI_MODEL: z.string().min(1).default('openai/gpt-oss-20b'),
   AI_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.90),
   AI_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30000).default(8000),
@@ -50,6 +53,10 @@ export const productionCutoverAtMs = env.PRODUCTION_CUTOVER_AT
   : null;
 if (productionCutoverAtMs !== null && !Number.isFinite(productionCutoverAtMs)) {
   throw new Error('PRODUCTION_CUTOVER_AT must be a valid ISO timestamp');
+}
+export const followupCutoverAtMs = env.FOLLOWUP_CUTOVER_AT ? Date.parse(env.FOLLOWUP_CUTOVER_AT) : null;
+if (env.FOLLOWUP_MODE !== 'off' && (followupCutoverAtMs === null || !Number.isFinite(followupCutoverAtMs))) {
+  throw new Error('FOLLOWUP_CUTOVER_AT is required when follow-ups are enabled');
 }
 
 export const companies: CompanyConfig[] = [

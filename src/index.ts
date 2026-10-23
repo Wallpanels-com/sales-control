@@ -14,7 +14,8 @@ app.get('/health', async (_request, reply) => reply.code(200).send({
   ok: true, ready, telegramPolling, service: 'wpvh-sales-control', testMode: env.TEST_MODE,
   companies: companies.map(c => c.slug), thresholdsMinutes,
   ai: { enabled: Boolean(env.GROQ_API_KEY), model: env.AI_MODEL, confidenceThreshold: env.AI_CONFIDENCE_THRESHOLD },
-  productionCutoverAt: env.PRODUCTION_CUTOVER_AT || null
+  productionCutoverAt: env.PRODUCTION_CUTOVER_AT || null,
+  followups: { mode: env.FOLLOWUP_MODE, delaysHours: [24,48,96] }
 }));
 
 async function runTelegramPolling(): Promise<void> {

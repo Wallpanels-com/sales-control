@@ -12,6 +12,14 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      SUPABASE_URL: https://example.supabase.co
+      SUPABASE_SECRET_KEY: unit-test-secret-not-a-real-key
+      TELEGRAM_BOT_TOKEN: unit-test-token-not-a-real-token
+      VERONA_LOCATION_ID: unit-test-location
+      VERONA_API_TOKEN: unit-test-readonly-token
+      TEST_MODE: 'true'
+      FOLLOWUP_MODE: 'off'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

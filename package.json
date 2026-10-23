@@ -12,7 +12,9 @@
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run src"
+    "test": "vitest run src",
+    "followup:preview": "tsx src/followup-preview.ts",
+    "followup:demo": "tsx src/followup-demo.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.2",

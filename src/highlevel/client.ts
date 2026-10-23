@@ -84,6 +84,21 @@ export class HighLevelClient {
     return this.request(`/conversations/${encodeURIComponent(conversationId)}`, { maxAttempts });
   }
 
+  async getConversationMessages(conversationId: string, anchorId: string): Promise<GhlMessage[]> {
+    const all: GhlMessage[] = [];
+    let lastMessageId: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const data = await this.request<{ messages: { messages: GhlMessage[]; nextPage?: boolean; lastMessageId?: string } }>(
+        `/conversations/${encodeURIComponent(conversationId)}/messages`,
+        { query: { limit: 100, lastMessageId }, maxAttempts: 1 });
+      all.push(...(data.messages?.messages || []));
+      if (all.some(message => message.id === anchorId) || !data.messages?.nextPage) return all;
+      if (!data.messages.lastMessageId || data.messages.lastMessageId === lastMessageId) break;
+      lastMessageId = data.messages.lastMessageId;
+    }
+    throw new Error('Cannot verify follow-up anchor in bounded CRM history');
+  }
+
   async getContact(contactId: string, maxAttempts = 5): Promise<any> {
     const data = await this.request<{ contact: any }>(`/contacts/${encodeURIComponent(contactId)}`, { maxAttempts });
     return data.contact;

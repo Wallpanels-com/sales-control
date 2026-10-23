@@ -8,6 +8,7 @@ import { resolveResponsibleGhlUser } from './routing.js';
 import { getFallbackRecipients, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
 import { productionRecipients } from './recipients.js';
 import { writeSystemLog } from './systemLogs.js';
+import { evaluateFollowups } from './followups.js';
 
 // Test alerts only concern messages arriving in this run. The 24-hour bootstrap
 // import must not notify Dmitry for every historical conversation.
@@ -438,6 +439,13 @@ export async function startMonitor(): Promise<void> {
     setTimeout(alertLoop, env.POLL_INTERVAL_SECONDS * 1000);
   };
   setTimeout(alertLoop, Math.max(10_000, env.POLL_INTERVAL_SECONDS * 500));
+
+  const followupLoop = async () => {
+    try { await evaluateFollowups(companyAllowsAlerts); }
+    catch { console.warn('Follow-up monitor deferred'); }
+    setTimeout(followupLoop, 5 * 60_000);
+  };
+  setTimeout(followupLoop, 60_000);
 
   setInterval(async () => {
     for (const company of companies) {

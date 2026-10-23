@@ -4,6 +4,7 @@ import { env } from '../config.js';
 import { messagePreview, truncate } from '../utils/text.js';
 import { inboundClassifier, suppressesSlaIncident, type AiClassification, type AiConversationMessage } from './aiClassifier.js';
 import { isCustomerCommunication, isHumanOutbound, normalizeChannel } from './classification.js';
+import { trackFollowupEvent } from './followupState.js';
 
 async function knownHumanUserIds(companyId: string): Promise<Set<string>> {
   const { data, error } = await db.from('ghl_users').select('ghl_user_id').eq('company_id', companyId);
@@ -130,6 +131,13 @@ export async function ingestMessages(company: CompanyConfig, messages: GhlMessag
       raw: m
     }, { onConflict: 'company_id,message_id' });
     if (insertErr) throw insertErr;
+
+    try {
+      await trackFollowupEvent(companyRow.id, m, channel, humanOutbound);
+    } catch {
+      // Follow-up availability must never interrupt the existing unanswered SLA.
+      console.warn('Follow-up state update deferred', { company: company.slug });
+    }
 
     if (m.direction === 'inbound') {
       const { data: recordedIncident, error: recordedError } = await db.from('sla_incidents')
