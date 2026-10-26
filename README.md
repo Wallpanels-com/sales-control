@@ -32,6 +32,7 @@ Verona Home and WallPanels use separate HighLevel `locationId` values and separa
 - Kit Pavano — `@Irakli_Kit` — sales
 - Anthony Kosariev — `@tonykosarev` — sales
 - Mary Razumna — `@mariarayme` — sales
+- Jenny Cartner — `@jenajens` — sales
 - Dmitry — `@dimaqim` — admin
 - Katherina — `@katherina_ostroglo` — manager
 - Igor Kravchenko — `@FoxionCEO` — admin (global alerts)
