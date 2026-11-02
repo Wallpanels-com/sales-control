@@ -1,3 +1,18 @@
+import type { GhlMessage } from '../types.js';
+import { isCustomerCommunication } from './classification.js';
+
+export function verifiedIncidentHistory(
+  messages: GhlMessage[],
+  scope: { locationId: string; conversationId: string; contactId: string; inboundMessageId: string }
+): GhlMessage[] {
+  const scoped = messages.filter(message => message.locationId === scope.locationId
+    && message.conversationId === scope.conversationId && message.contactId === scope.contactId
+    && isCustomerCommunication(message) && Number.isFinite(Date.parse(message.dateAdded)));
+  const anchor = scoped.find(message => message.id === scope.inboundMessageId && message.direction === 'inbound');
+  if (!anchor) throw new Error('Cannot verify SLA inbound in current CRM history');
+  return scoped.filter(message => Date.parse(message.dateAdded) >= Date.parse(anchor.dateAdded));
+}
+
 export function buildConversationUrl(
   template: string | undefined,
   values: { conversationId: string; contactId: string; locationId: string; contactName?: string | null }

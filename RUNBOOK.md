@@ -6,6 +6,12 @@ Company configuration is loaded once at startup. Staff, Telegram registrations, 
 
 If the Supabase Data API returns HTTP 402, all database-backed monitor loops share one circuit breaker. Polling pauses and a single probe retries after 15 minutes, then 30 minutes, then hourly while the block remains. The process and `/health` endpoint stay online; `/health` reports `database.blocked`, `database.retryAt` and `ready: false` until access is restored. Do not delete SLA history to address egress: reduce query volume and restore the Supabase plan or quota instead.
 
+Provisional AI checks load small classification metadata first; full raw message payloads are downloaded only for retryable results at least 15 minutes old. Final classifications are never repeatedly downloaded as complete email/HTML payloads.
+
+Before a due SLA notification, the monitor verifies the exact CRM conversation, company and inbound anchor and reconciles messages since that anchor. This covers human replies outside the startup lookback after a long outage. If CRM history is unavailable or incomplete, delivery is deferred. A successful highest-threshold notification covers earlier missed thresholds instead of sending a 60/90/120 burst.
+
+After a quota recovery, confirm `/health` reports `ready: true`, `telegramPolling: true`, `database.blocked: false`, then inspect Railway logs and Supabase request counts. For a read-only connection diagnostic, run `npm run build` and `node scripts/verify-connections.mjs`; it does not start polling or send Telegram messages. Do not run another copy of the production bot locally.
+
 ## Rotate a token
 
 Replace the affected value in the local ignored `.env.local` and the matching Railway variable, then restart the one Railway service. Rotate the old credential in its provider after the new one passes `/health` and a read-only connection check. Keep `TEST_MODE=true` during rotation. Never paste token values into logs, issues, or commits.

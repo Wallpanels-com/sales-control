@@ -8,6 +8,8 @@ import { trackFollowupEvent } from './followupState.js';
 import { getCompanyRowBySlug, getCompanyRows } from './companyRegistry.js';
 import { getKnownGhlUserIds } from './staff.js';
 
+const PROVISIONAL_RETRY_MS = 15 * 60_000;
+
 async function conversationContext(companyId: string, message: GhlMessage): Promise<AiConversationMessage[]> {
   const { data, error } = await db.from('message_events')
     .select('direction,body,channel,is_human_outbound,date_added')
@@ -44,7 +46,8 @@ async function classifyInbound(
   if (storedError) throw storedError;
   const hasStoredClassification = stored.ai_classified_at && stored.ai_needs_reply !== null
     && stored.ai_confidence !== null && stored.ai_reason && stored.ai_model;
-  if (hasStoredClassification && !(retryProvisional && isProvisionalAiReason(stored.ai_reason))) {
+  const retryDue = Date.now() - Date.parse(stored.ai_classified_at || '') >= PROVISIONAL_RETRY_MS;
+  if (hasStoredClassification && !(retryProvisional && retryDue && isProvisionalAiReason(stored.ai_reason))) {
     return {
       needsReply: stored.ai_needs_reply,
       confidence: Number(stored.ai_confidence),
@@ -232,13 +235,25 @@ export async function recheckOpenProvisionalIncidents(companyConfigs: CompanyCon
   const messageIds = [...new Set((incidents || []).map((incident: any) => incident.latest_inbound_message_id))];
   if (!messageIds.length) return 0;
   const { data: events, error: eventError } = await db.from('message_events')
-    .select('company_id,message_id,raw,ai_reason').in('message_id', messageIds);
+    .select('company_id,message_id,ai_reason,ai_classified_at').in('message_id', messageIds);
   if (eventError) throw eventError;
 
+  // Most incidents have a final classification. Never download their complete
+  // raw payload (including HTML/email history) on every polling cycle.
+  const retryIds = (events || []).filter(event =>
+    openKeys.has(`${event.company_id}:${event.message_id}`)
+    && isProvisionalAiReason(event.ai_reason)
+    && (!event.ai_classified_at || Date.now() - Date.parse(event.ai_classified_at) >= PROVISIONAL_RETRY_MS)
+  ).map(event => event.message_id);
+  if (!retryIds.length) return 0;
+  const { data: retryEvents, error: retryError } = await db.from('message_events')
+    .select('company_id,message_id,raw').in('message_id', retryIds);
+  if (retryError) throw retryError;
+
   const messagesByCompany = new Map<string, GhlMessage[]>();
-  for (const event of events || []) {
+  for (const event of retryEvents || []) {
     if (!openKeys.has(`${event.company_id}:${event.message_id}`)) continue;
-    if (!event.raw || !isProvisionalAiReason(event.ai_reason)) continue;
+    if (!event.raw) continue;
     const slug = companyById.get(event.company_id);
     if (!slug) continue;
     const list = messagesByCompany.get(slug) || [];

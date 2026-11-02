@@ -20,7 +20,7 @@ export function observeSupabaseHttpStatus(status: number, now = Date.now()): voi
     });
     return;
   }
-  if (probeInFlight && status >= 200 && status < 500) {
+  if (probeInFlight && status >= 200 && status < 300) {
     blockedUntil = 0;
     consecutiveBlocks = 0;
     console.info('Supabase Data API access restored');

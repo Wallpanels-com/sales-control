@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert } from './alertSafety.js';
+import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert, verifiedIncidentHistory } from './alertSafety.js';
+import { isHumanOutbound } from './classification.js';
+import type { GhlMessage } from '../types.js';
+
+describe('post-outage conversation reconciliation', () => {
+  const scope = { locationId: 'wallpanels', conversationId: 'conversation', contactId: 'client', inboundMessageId: 'inbound' };
+  const inbound: GhlMessage = { id: 'inbound', locationId: 'wallpanels', conversationId: 'conversation',
+    contactId: 'client', direction: 'inbound', messageType: 'TYPE_INSTAGRAM', dateAdded: '2026-10-30T10:00:00Z', body: 'Quote?' };
+
+  it('retains a human reply from outside the rolling export window', () => {
+    const reply: GhlMessage = { ...inbound, id: 'reply', direction: 'outbound', source: 'app', dateAdded: '2026-10-30T12:00:00Z' };
+    const history = verifiedIncidentHistory([reply, inbound], scope);
+    expect(history).toContain(reply);
+    expect(history.some(message => isHumanOutbound(message, new Set()))).toBe(true);
+  });
+
+  it('does not treat workflow messages, calls or another location as a human reply', () => {
+    const outbound: GhlMessage = { ...inbound, id: 'outbound', direction: 'outbound', dateAdded: '2026-10-30T12:00:00Z' };
+    const history = verifiedIncidentHistory([inbound,
+      { ...outbound, source: 'workflow' },
+      { ...outbound, id: 'call', source: 'app', messageType: 'TYPE_CALL' },
+      { ...outbound, id: 'other-company', source: 'app', locationId: 'verona' }], scope);
+    expect(history.map(message => message.id)).toEqual(['inbound', 'outbound']);
+    expect(history.some(message => isHumanOutbound(message, new Set()))).toBe(false);
+  });
+
+  it('fails closed when the exact inbound anchor cannot be verified', () => {
+    expect(() => verifiedIncidentHistory([], scope)).toThrow('Cannot verify');
+    expect(() => verifiedIncidentHistory([{ ...inbound, contactId: 'different-client' }], scope)).toThrow('Cannot verify');
+  });
+});
 
 const template = 'https://app.gohighlevel.com/v2/location/{locationId}/conversations/conversations/{conversationId}?category=team-inbox&tab=all';
 

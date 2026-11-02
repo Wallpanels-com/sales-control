@@ -2,7 +2,7 @@ import { companies, env, productionCutoverAtMs, thresholdsMinutes } from '../con
 import { db } from '../db.js';
 import { HighLevelClient } from '../highlevel/client.js';
 import { sendSlaAlert } from '../telegram.js';
-import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert } from './alertSafety.js';
+import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert, verifiedIncidentHistory } from './alertSafety.js';
 import { ingestMessages, recheckOpenProvisionalIncidents } from './messageState.js';
 import { resolveResponsibleGhlUser } from './routing.js';
 import { getFallbackRecipients, getGhlUserName, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
@@ -263,6 +263,24 @@ async function evaluateAlerts(): Promise<void> {
       preliminaryRecipients.some((recipient: any) => shouldAttemptRecipient(state, threshold, recipient)));
     if (!needsWork) continue;
 
+    // A successful rolling export does not cover replies older than its
+    // lookback after a long outage. Reconcile this exact conversation only
+    // when delivery is due, never for every incident on every minute.
+    const ghl = new HighLevelClient(actualCompany);
+    const conversation = await ghl.getConversation(state.conversation_id, 1);
+    if (conversation.locationId !== actualCompany.locationId
+      || conversation.contactId !== state.contact_id || conversation.deleted) continue;
+    const history = verifiedIncidentHistory(
+      await ghl.getConversationMessages(state.conversation_id, state.latest_inbound_message_id),
+      { locationId: actualCompany.locationId, conversationId: state.conversation_id,
+        contactId: state.contact_id, inboundMessageId: state.latest_inbound_message_id }
+    );
+    await ingestMessages(actualCompany, history);
+    const { data: reconciled, error: reconciliationError } = await db.from('sla_incidents')
+      .select('status,latest_inbound_message_id').eq('id', state.id).single();
+    if (reconciliationError) throw reconciliationError;
+    if (!incidentStillAllowsAlert(state, reconciled)) continue;
+
     // Refresh routing only when a threshold actually needs delivery. The old
     // implementation repeated three live GHL lookups for every open incident
     // every minute, exhausted the API limit and delayed reply ingestion.
@@ -377,6 +395,11 @@ async function evaluateAlerts(): Promise<void> {
       }
     }
     } catch (stateError) {
+      if (isRateLimited(stateError)) {
+        const row = await getCompanyRowById(state.company_id);
+        const company = companies.find(company => company.slug === row?.slug);
+        if (company) pauseForRateLimit(company);
+      }
       console.error('SLA conversation evaluation failed', {
         companyId: state.company_id,
         error: stateError instanceof Error ? stateError.message : 'unknown'

@@ -46,4 +46,34 @@ describe('Supabase quota circuit breaker', () => {
     expect(isSupabaseQuotaError({ message: 'HTTP 402 from PostgREST' })).toBe(true);
     expect(isSupabaseQuotaError({ status: 500, message: 'Database unavailable' })).toBe(false);
   });
+
+  it('never reports recovery for an unauthorized or failed probe', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    observeSupabaseHttpStatus(402, 1_000);
+    const probe = acquireDatabasePermit(1_000 + 15 * 60_000);
+    for (const status of [401, 403, 404, 500, 503]) {
+      observeSupabaseHttpStatus(status);
+      expect(databaseCircuitSnapshot().blocked).toBe(true);
+    }
+    releaseDatabasePermit(probe!);
+  });
+
+  it('backs off to at most one quota probe per hour and resets after recovery', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    let now = 1_000;
+    for (const delay of [15, 30, 60, 60]) {
+      observeSupabaseHttpStatus(402, now);
+      expect(databaseCircuitSnapshot(now).retryAt).toBe(new Date(now + delay * 60_000).toISOString());
+      expect(acquireDatabasePermit(now + delay * 60_000 - 1)).toBeNull();
+      now += delay * 60_000;
+      const permit = acquireDatabasePermit(now);
+      expect(permit).toBe('probe');
+      releaseDatabasePermit(permit!);
+    }
+    const permit = acquireDatabasePermit(now);
+    observeSupabaseHttpStatus(200, now);
+    releaseDatabasePermit(permit!);
+    expect(databaseCircuitSnapshot(now).consecutiveBlocks).toBe(0);
+  });
 });
