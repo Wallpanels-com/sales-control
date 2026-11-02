@@ -12,6 +12,8 @@ Before a due SLA notification, the monitor verifies the exact CRM conversation, 
 
 After a quota recovery, confirm `/health` reports `ready: true`, `telegramPolling: true`, `database.blocked: false`, then inspect Railway logs and Supabase request counts. For a read-only connection diagnostic, run `npm run build` and `node scripts/verify-connections.mjs`; it does not start polling or send Telegram messages. Do not run another copy of the production bot locally.
 
+The `/health` `monitor` array shows the last successful synchronization time per company, whether a poll is in progress, and whether the fresh synchronization gate currently permits alerts. A company is temporarily not alert-ready during its poll; a persistently stale timestamp requires investigation.
+
 ## Rotate a token
 
 Replace the affected value in the local ignored `.env.local` and the matching Railway variable, then restart the one Railway service. Rotate the old credential in its provider after the new one passes `/health` and a read-only connection check. Keep `TEST_MODE=true` during rotation. Never paste token values into logs, issues, or commits.

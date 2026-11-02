@@ -3,7 +3,7 @@ import { bot } from './telegram.js';
 import { env, companies, thresholdsMinutes } from './config.js';
 import { seedStaff, warmStaffDirectory } from './services/staff.js';
 import { syncCompanies } from './services/companies.js';
-import { startMonitor } from './services/monitor.js';
+import { monitorHealth, startMonitor } from './services/monitor.js';
 import { runDatabaseWork } from './services/databaseWork.js';
 import { databaseCircuitSnapshot } from './services/databaseCircuit.js';
 
@@ -16,7 +16,7 @@ app.get('/health', async (_request, reply) => {
   const database = databaseCircuitSnapshot();
   return reply.code(200).send({
     ok: true, ready: ready && !database.blocked, telegramPolling, service: 'wpvh-sales-control', testMode: env.TEST_MODE,
-    companies: companies.map(c => c.slug), thresholdsMinutes, database,
+    companies: companies.map(c => c.slug), thresholdsMinutes, database, monitor: monitorHealth(),
     ai: { enabled: Boolean(env.GROQ_API_KEY), model: env.AI_MODEL, confidenceThreshold: env.AI_CONFIDENCE_THRESHOLD },
     productionCutoverAt: env.PRODUCTION_CUTOVER_AT || null,
     followups: { mode: env.FOLLOWUP_MODE, delaysHours: [24,48,96] }

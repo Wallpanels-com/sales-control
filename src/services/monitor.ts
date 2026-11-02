@@ -21,6 +21,16 @@ const rateLimitedUntil = new Map<string, number>();
 const pollHealthy = new Map<string, boolean>();
 const pollingCompanies = new Set<string>();
 
+export function monitorHealth() {
+  return companies.map(company => ({
+    company: company.slug,
+    healthy: companyAllowsAlerts(company.slug),
+    polling: pollingCompanies.has(company.slug),
+    lastSuccessfulPollAt: lastSuccessfulPollEnd.has(company.slug)
+      ? new Date(lastSuccessfulPollEnd.get(company.slug)!).toISOString() : null
+  }));
+}
+
 function companyAllowsAlerts(slug: string): boolean {
   return syncAllowsAlert(lastSuccessfulPollEnd.get(slug), pollHealthy.get(slug) === true,
     pollingCompanies.has(slug), env.POLL_INTERVAL_SECONDS);
@@ -236,6 +246,7 @@ async function evaluateAlerts(): Promise<void> {
   const globalRecipients = env.TEST_MODE ? [] : await getFallbackRecipients();
 
   for (const state of states || []) {
+    if (databaseCircuitSnapshot().blocked) return;
     try {
     const waitingMinutes = Math.floor((Date.now() - Date.parse(state.latest_inbound_at)) / 60_000);
     if (env.TEST_MODE && Date.parse(state.latest_inbound_at) < testSessionStartedAt) continue;
@@ -344,7 +355,7 @@ async function evaluateAlerts(): Promise<void> {
         const { data: fresh, error: freshError } = await db.from('sla_incidents')
           .select('status,latest_inbound_message_id').eq('id', state.id).single();
         if (freshError) throw freshError;
-        if (!companyAllowsAlerts(actualCompany.slug) || !incidentStillAllowsAlert(state, fresh)) break;
+        if (databaseCircuitSnapshot().blocked || !companyAllowsAlerts(actualCompany.slug) || !incidentStillAllowsAlert(state, fresh)) break;
 
         const key = `${state.id}:${state.latest_inbound_message_id}:${threshold}:${recipient.id}`;
         const alertId = await claimAlert(state, threshold, recipient.id, alertByKey.get(key));
