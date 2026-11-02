@@ -10,8 +10,9 @@ import { FollowupAi } from './followupAi.js';
 import { followupRecipients } from './followupPolicy.js';
 import { renderFollowupNotification } from './followupTelegram.js';
 import { resolveResponsibleGhlUser } from './routing.js';
-import { getFallbackRecipients, getStaffByGhlUser, getStaffByTelegramUsername, getTestRecipient } from './staff.js';
+import { getFallbackRecipients, getGhlUserName, getKnownGhlUserIds, getStaffByGhlUser, getStaffByTelegramUsername, getTestRecipient } from './staff.js';
 import { buildConversationUrl } from './alertSafety.js';
+import { getCompanyRowBySlug, getCompanyRows } from './companyRegistry.js';
 
 const ai = new FollowupAi({ apiKey: env.FOLLOWUP_GROQ_API_KEY || env.GROQ_API_KEY,
   model: env.AI_MODEL, timeoutMs: Math.max(env.AI_TIMEOUT_MS, 15_000) });
@@ -22,9 +23,7 @@ async function prepare(company: CompanyConfig, thread: any, requiredOwnerId?: st
   const conversation = await ghl.getConversation(thread.conversation_id, 1);
   if (conversation.locationId !== company.locationId || conversation.contactId !== thread.contact_id || conversation.deleted) return null;
   const raw = await ghl.getConversationMessages(thread.conversation_id, thread.anchor_message_id);
-  const { data: users, error: userError } = await db.from('ghl_users').select('ghl_user_id').eq('company_id', thread.company_id);
-  if (userError) throw userError;
-  const humans = new Set<string>((users || []).map(user => user.ghl_user_id));
+  const humans = await getKnownGhlUserIds(company.slug);
   const messages = raw.filter(message => message.locationId === company.locationId
     && message.conversationId === thread.conversation_id && message.contactId === thread.contact_id
     && isCustomerCommunication(message)).sort((a,b) => Date.parse(a.dateAdded) - Date.parse(b.dateAdded));
@@ -39,10 +38,7 @@ async function prepare(company: CompanyConfig, thread: any, requiredOwnerId?: st
   const owner = await getStaffByGhlUser(company.slug, route.ghlUserId);
   // Targeted previews must verify the current owner before sharing any text with AI.
   if (requiredOwnerId && owner?.id !== requiredOwnerId) return null;
-  const { data: ghlUser, error: ghlError } = route.ghlUserId
-    ? await db.from('ghl_users').select('name').eq('company_id', thread.company_id).eq('ghl_user_id', route.ghlUserId).maybeSingle()
-    : { data: null, error: null };
-  if (ghlError) throw ghlError;
+  const ghlUserName = await getGhlUserName(company.slug, route.ghlUserId);
   const contact = await ghl.getContact(thread.contact_id, 1);
   if (contact.locationId && contact.locationId !== company.locationId) return null;
   const contactName = contact.name || contact.fullName || [contact.firstName,contact.lastName].filter(Boolean).join(' ')
@@ -54,7 +50,7 @@ async function prepare(company: CompanyConfig, thread: any, requiredOwnerId?: st
   const context = messages.slice(-12).map(message => ({ direction: message.direction,
     human: isHumanOutbound(message, humans), at: message.dateAdded,
     text: truncate(messagePreview(message.body, thread.channel) || '[attachment without text]', 600) }));
-  const ownerName = ghlUser?.name || owner?.name || 'Не назначен';
+  const ownerName = ghlUserName || owner?.name || 'Не назначен';
   const suggestion = await ai.suggest(context, thread.stage, new Date(), {salesName:ownerName,customerName:contactName});
   return { suggestion, owner, ownerName, contactName, url, anchor };
 }
@@ -122,11 +118,14 @@ async function deliver(company: CompanyConfig, thread: any, prepared: NonNullabl
 export async function evaluateFollowups(companyAllowsAlerts: (slug: string) => boolean): Promise<void> {
   // Preview mode NEVER has an automatic delivery path, even to Dmitry. Only an explicit preview command sends one example.
   if (env.FOLLOWUP_MODE !== 'production' || env.TEST_MODE) return;
-  const { data: threads, error } = await db.from('followup_threads').select('*,companies!inner(slug)')
+  const { data: threads, error } = await db.from('followup_threads')
+    .select('id,company_id,conversation_id,contact_id,cycle_inbound_message_id,anchor_message_id,anchor_at,channel,stage,status,due_at,last_event_key')
     .eq('status','waiting').lte('due_at',new Date().toISOString()).order('due_at').limit(10);
   if (error) throw error;
+  const companyRows = await getCompanyRows();
   for (const thread of threads || []) {
-    const company = companies.find(company => company.slug === (thread.companies as any).slug);
+    const slug = companyRows.find(row => row.id === thread.company_id)?.slug;
+    const company = companies.find(company => company.slug === slug);
     if (!company || !companyAllowsAlerts(company.slug)) continue;
     try {
       const prepared = await prepare(company, thread);
@@ -171,8 +170,7 @@ export async function sendOneFollowupPreview(ownerUsername?: string, replaceMess
     .eq('conversation_id',replacement.conversation_id).eq('message_id',replacement.anchor_message_id);
   const { data: candidates, error } = await candidatesQuery.order('date_added',{ascending:false}).limit(300);
   if (error) throw error;
-  const { data: companyRows, error: companyError } = await db.from('companies').select('id,slug');
-  if (companyError) throw companyError;
+  const companyRows = await getCompanyRows();
   const seen = new Set<string>();
   let checked = 0;
   for (const candidate of candidates || []) {
@@ -219,8 +217,7 @@ export async function sendOneFollowupDemo(): Promise<void> {
   if (env.FOLLOWUP_MODE !== 'preview') throw new Error('Explicit preview mode required');
   const company = companies.find(company => company.slug === 'verona');
   if (!company) throw new Error('Verona not configured');
-  const { data: companyRow, error: companyError } = await db.from('companies').select('id').eq('slug',company.slug).single();
-  if (companyError) throw companyError;
+  const companyRow = await getCompanyRowBySlug(company.slug);
   // Select metadata only. No real customer text or name is sent to Groq.
   const { data: sample, error } = await db.from('message_events').select('conversation_id,contact_id')
     .eq('company_id',companyRow.id).order('date_added',{ascending:false}).limit(1).single();

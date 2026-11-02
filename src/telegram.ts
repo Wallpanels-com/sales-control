@@ -1,9 +1,10 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import { db } from './db.js';
 import { env } from './config.js';
-import { getStaffByTelegramUserId, getStaffByTelegramUsername } from './services/staff.js';
+import { getStaffByTelegramUserId, getStaffByTelegramUsername, invalidateStaffDirectory } from './services/staff.js';
 import { escapeHtml, messagePreview, normalizeUsername } from './utils/text.js';
 import { createRegistrationInvite, validRegistrationInvite } from './services/registration.js';
+import { getCompanyRows } from './services/companyRegistry.js';
 
 export const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
@@ -18,6 +19,7 @@ bot.command('start', async (ctx) => {
       updated_at: new Date().toISOString()
     }).eq('staff_id', previouslyRegistered.id);
     if (error) throw error;
+    invalidateStaffDirectory();
     return ctx.reply(`Registered: ${previouslyRegistered.name}. Notifications are enabled.`);
   }
   const username = normalizeUsername(ctx.from?.username);
@@ -49,6 +51,7 @@ bot.command('start', async (ctx) => {
   });
   if (error?.code === '23505') return ctx.reply('This account has already been registered. Send /start again.');
   if (error) throw error;
+  invalidateStaffDirectory();
   await ctx.reply(`Registered: ${staff.name} (${staff.role}). Notifications are enabled.`);
 });
 
@@ -74,8 +77,7 @@ bot.command('status', async (ctx) => {
     .select('*', { count: 'exact', head: true })
     .eq('status', 'open');
   if (error) throw error;
-  const { data: companies, error: companyError } = await db.from('companies').select('id,slug').eq('enabled', true);
-  if (companyError) throw companyError;
+  const companies = (await getCompanyRows()).filter(company => company.enabled);
   const mappingLines: string[] = [];
   for (const company of companies || []) {
     const [{ count: users, error: usersError }, { data: mappings, error: mappedError }, { data: sales, error: salesError }] = await Promise.all([

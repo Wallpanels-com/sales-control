@@ -1,5 +1,11 @@
 # WPVH Sales Control runbook
 
+## Supabase usage protection
+
+Company configuration is loaded once at startup. Staff, Telegram registrations, GHL mappings and GHL user names are batch-loaded into a 15-minute in-memory cache; bot-driven registration and user synchronization invalidate that cache immediately.
+
+If the Supabase Data API returns HTTP 402, all database-backed monitor loops share one circuit breaker. Polling pauses and a single probe retries after 15 minutes, then 30 minutes, then hourly while the block remains. The process and `/health` endpoint stay online; `/health` reports `database.blocked`, `database.retryAt` and `ready: false` until access is restored. Do not delete SLA history to address egress: reduce query volume and restore the Supabase plan or quota instead.
+
 ## Rotate a token
 
 Replace the affected value in the local ignored `.env.local` and the matching Railway variable, then restart the one Railway service. Rotate the old credential in its provider after the new one passes `/health` and a read-only connection check. Keep `TEST_MODE=true` during rotation. Never paste token values into logs, issues, or commits.

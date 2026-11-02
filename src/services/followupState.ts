@@ -7,7 +7,8 @@ export async function trackFollowupEvent(companyId: string, message: GhlMessage,
   if (env.FOLLOWUP_MODE === 'off' || followupCutoverAtMs === null
     || Date.parse(message.dateAdded) < followupCutoverAtMs) return;
   if (message.direction === 'outbound' && (!human || ['failed','undelivered','scheduled','pending','opt_out'].includes(message.status || ''))) return;
-  const { data: current, error } = await db.from('followup_threads').select('*')
+  const { data: current, error } = await db.from('followup_threads')
+    .select('id,cycle_inbound_message_id,anchor_message_id,anchor_at,channel,stage,status,due_at,reminded_at,last_event_key')
     .eq('company_id', companyId).eq('conversation_id', message.conversationId).maybeSingle();
   if (error) throw error;
   let previousInboundId: string | undefined;

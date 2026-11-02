@@ -5,12 +5,8 @@ import { messagePreview, truncate } from '../utils/text.js';
 import { inboundClassifier, suppressesSlaIncident, type AiClassification, type AiConversationMessage } from './aiClassifier.js';
 import { isCustomerCommunication, isHumanOutbound, normalizeChannel } from './classification.js';
 import { trackFollowupEvent } from './followupState.js';
-
-async function knownHumanUserIds(companyId: string): Promise<Set<string>> {
-  const { data, error } = await db.from('ghl_users').select('ghl_user_id').eq('company_id', companyId);
-  if (error) throw error;
-  return new Set((data || []).map((r: any) => r.ghl_user_id));
-}
+import { getCompanyRowBySlug, getCompanyRows } from './companyRegistry.js';
+import { getKnownGhlUserIds } from './staff.js';
 
 async function conversationContext(companyId: string, message: GhlMessage): Promise<AiConversationMessage[]> {
   const { data, error } = await db.from('message_events')
@@ -96,9 +92,8 @@ export function planInboundIncident(
 }
 
 export async function ingestMessages(company: CompanyConfig, messages: GhlMessage[]): Promise<number> {
-  const { data: companyRow, error: cErr } = await db.from('companies').select('id').eq('slug', company.slug).single();
-  if (cErr) throw cErr;
-  const humans = await knownHumanUserIds(companyRow.id);
+  const companyRow = await getCompanyRowBySlug(company.slug);
+  const humans = await getKnownGhlUserIds(company.slug);
   let processed = 0;
 
   const sorted = [...messages]
@@ -225,9 +220,8 @@ export async function ingestMessages(company: CompanyConfig, messages: GhlMessag
 }
 
 export async function recheckOpenProvisionalIncidents(companyConfigs: CompanyConfig[]): Promise<number> {
-  const { data: companyRows, error: companyError } = await db.from('companies').select('id,slug');
-  if (companyError) throw companyError;
-  const companyById = new Map((companyRows || []).map((row: any) => [row.id, row.slug]));
+  const companyRows = await getCompanyRows();
+  const companyById = new Map(companyRows.map(row => [row.id, row.slug]));
 
   const { data: incidents, error: incidentError } = await db.from('sla_incidents')
     .select('company_id,latest_inbound_message_id').eq('status', 'open');

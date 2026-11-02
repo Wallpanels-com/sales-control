@@ -3,45 +3,126 @@ const seed = JSON.parse(readFileSync(new URL('../../config/staff.seed.json', imp
 import { db } from '../db.js';
 import { normalizeName, normalizeUsername } from '../utils/text.js';
 import type { CompanyConfig, GhlUser } from '../types.js';
+import { getCompanyRowBySlug, getCompanyRows } from './companyRegistry.js';
+
+const DIRECTORY_TTL_MS = 15 * 60_000;
+
+interface StaffDirectory {
+  byTelegramUsername: Map<string, any>;
+  byTelegramUserId: Map<string, any>;
+  byGhlUser: Map<string, any>;
+  ghlUserNames: Map<string, string>;
+  knownGhlUsers: Map<string, Set<string>>;
+  active: any[];
+}
+
+let directory: StaffDirectory | null = null;
+let directoryLoadedAt = 0;
+let directoryLoading: Promise<StaffDirectory> | null = null;
+
+export function invalidateStaffDirectory(): void {
+  directory = null;
+  directoryLoadedAt = 0;
+  directoryLoading = null;
+}
+
+async function getStaffDirectory(): Promise<StaffDirectory> {
+  if (directory && Date.now() - directoryLoadedAt < DIRECTORY_TTL_MS) return directory;
+  if (!directoryLoading) {
+    directoryLoading = (async () => {
+      const [staffResult, telegramResult, mappingResult, ghlResult] = await Promise.all([
+        db.from('staff').select('id,name,telegram_username,role,active,created_at,updated_at').eq('active', true),
+        db.from('telegram_users').select('id,staff_id,telegram_user_id,telegram_chat_id,telegram_username,registered_at,updated_at'),
+        db.from('staff_ghl_map').select('staff_id,company_id,ghl_user_id,mapping_source'),
+        db.from('ghl_users').select('company_id,ghl_user_id,name')
+      ]);
+      const error = staffResult.error || telegramResult.error || mappingResult.error || ghlResult.error;
+      if (error) throw error;
+
+      const registrationByStaff = new Map((telegramResult.data || []).map(row => [row.staff_id, row]));
+      const active: any[] = (staffResult.data || []).map(staff => {
+        const registration = registrationByStaff.get(staff.id);
+        return registration
+          ? { ...staff, ...registration, id: staff.id, telegram_registration_id: registration.id }
+          : staff;
+      });
+      const staffById = new Map(active.map(staff => [staff.id, staff]));
+      const byTelegramUsername = new Map((staffResult.data || []).map(staff => [
+        normalizeUsername(staff.telegram_username),
+        staffById.get(staff.id)
+      ]));
+      const byTelegramUserId = new Map(active
+        .filter(staff => staff.telegram_user_id !== undefined && staff.telegram_user_id !== null)
+        .map(staff => [String(staff.telegram_user_id), staff]));
+      const byGhlUser = new Map<string, any>();
+      for (const mapping of mappingResult.data || []) {
+        const staff = staffById.get(mapping.staff_id);
+        if (staff) byGhlUser.set(`${mapping.company_id}:${mapping.ghl_user_id}`, staff);
+      }
+      const ghlUserNames = new Map<string, string>();
+      const knownGhlUsers = new Map<string, Set<string>>();
+      for (const user of ghlResult.data || []) {
+        ghlUserNames.set(`${user.company_id}:${user.ghl_user_id}`, user.name);
+        const ids = knownGhlUsers.get(user.company_id) || new Set<string>();
+        ids.add(user.ghl_user_id);
+        knownGhlUsers.set(user.company_id, ids);
+      }
+      directory = { byTelegramUsername, byTelegramUserId, byGhlUser, ghlUserNames, knownGhlUsers, active };
+      directoryLoadedAt = Date.now();
+      return directory;
+    })().finally(() => {
+      directoryLoading = null;
+    });
+  }
+  return directoryLoading;
+}
 
 export async function seedStaff(): Promise<void> {
-  for (const person of seed) {
-    const { data: existing, error: lookupError } = await db.from('staff').select('id')
-      .eq('name', person.name).eq('role', person.role).maybeSingle();
-    if (lookupError) throw lookupError;
-    if (existing) continue;
-    const { error } = await db.from('staff').insert({
+  const { data: existing, error: lookupError } = await db.from('staff').select('name,role');
+  if (lookupError) throw lookupError;
+  const existingKeys = new Set((existing || []).map(person => `${person.name}:${person.role}`));
+  const missing = seed.filter(person => !existingKeys.has(`${person.name}:${person.role}`)).map(person => ({
       name: person.name,
       telegram_username: normalizeUsername(person.telegram_username),
       role: person.role,
       active: true
-    });
+  }));
+  if (missing.length) {
+    const { error } = await db.from('staff').insert(missing);
     if (error) throw error;
   }
+  invalidateStaffDirectory();
 }
 
 export async function syncGhlUsers(company: CompanyConfig, users: GhlUser[]): Promise<void> {
-  const { data: companyRow, error: companyErr } = await db
-    .from('companies').select('id').eq('slug', company.slug).single();
-  if (companyErr) throw companyErr;
+  const companyRow = await getCompanyRowBySlug(company.slug);
 
-  for (const user of users) {
+  const usersPayload = users.map(user => {
     const displayName = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ').trim();
-    const { error } = await db.from('ghl_users').upsert({
+    return {
       company_id: companyRow.id,
       ghl_user_id: user.id,
       name: displayName || user.email || user.id,
       email: user.email || null,
       raw: user,
       synced_at: new Date().toISOString()
-    }, { onConflict: 'company_id,ghl_user_id' });
+    };
+  });
+  if (usersPayload.length) {
+    const { error } = await db.from('ghl_users').upsert(usersPayload, { onConflict: 'company_id,ghl_user_id' });
     if (error) throw error;
   }
 
   // Conservative auto-map: only unique normalized exact name matches.
-  const { data: staffRows, error: staffErr } = await db.from('staff').select('*').eq('active', true);
-  if (staffErr) throw staffErr;
+  const [{ data: staffRows, error: staffErr }, { data: existingMaps, error: mapError }] = await Promise.all([
+    db.from('staff').select('id,name').eq('active', true),
+    db.from('staff_ghl_map').select('staff_id,ghl_user_id,mapping_source').eq('company_id', companyRow.id)
+  ]);
+  if (staffErr || mapError) throw staffErr || mapError;
+  const existingByStaff = new Map((existingMaps || []).map(mapping => [mapping.staff_id, mapping]));
+  const existingByGhl = new Map((existingMaps || []).map(mapping => [mapping.ghl_user_id, mapping]));
   const matchedUserIds = new Set<string>();
+  const automaticMappings: Array<{ staff_id: string; company_id: string; ghl_user_id: string; mapping_source: string }> = [];
   for (const staff of staffRows || []) {
     const matches = users.filter(u => {
       const n = u.name || [u.firstName, u.lastName].filter(Boolean).join(' ');
@@ -49,80 +130,70 @@ export async function syncGhlUsers(company: CompanyConfig, users: GhlUser[]): Pr
     });
     if (matches.length === 1) {
       matchedUserIds.add(matches[0].id);
-      const { data: existing, error: mapLookupError } = await db.from('staff_ghl_map').select('mapping_source,ghl_user_id')
-        .eq('staff_id', staff.id).eq('company_id', companyRow.id).maybeSingle();
-      if (mapLookupError) throw mapLookupError;
+      const existing = existingByStaff.get(staff.id);
       if (existing?.mapping_source === 'manual') continue;
-      const { error } = await db.from('staff_ghl_map').upsert({
+      const occupied = existingByGhl.get(matches[0].id);
+      if (occupied && occupied.staff_id !== staff.id) {
+        console.warn('GHL user mapped to another staff record', { company: company.slug, ghlUserId: matches[0].id });
+        continue;
+      }
+      automaticMappings.push({
         staff_id: staff.id,
         company_id: companyRow.id,
         ghl_user_id: matches[0].id,
         mapping_source: 'auto_exact_name'
-      }, { onConflict: 'staff_id,company_id' });
-      if (error?.code === '23505') console.warn('GHL user mapped to another staff record', { company: company.slug, ghlUserId: matches[0].id });
-      else if (error) throw error;
+      });
     } else if (matches.length > 1) {
       console.warn('Ambiguous CRM staff match', { company: company.slug, staffName: staff.name, count: matches.length });
     }
   }
+  if (automaticMappings.length) {
+    const { error } = await db.from('staff_ghl_map').upsert(automaticMappings, { onConflict: 'staff_id,company_id' });
+    if (error) throw error;
+  }
   const unmatched = users.filter(user => !matchedUserIds.has(user.id));
   if (unmatched.length) console.warn('Unmatched CRM users require mapping review', { company: company.slug, count: unmatched.length });
+  invalidateStaffDirectory();
 }
 
 export async function getStaffByTelegramUsername(username: string) {
-  const { data, error } = await db.from('staff')
-    .select('*').eq('telegram_username', normalizeUsername(username)).eq('active', true).maybeSingle();
-  if (error) throw error;
-  return data;
+  return (await getStaffDirectory()).byTelegramUsername.get(normalizeUsername(username)) || null;
 }
 
 export async function getStaffByTelegramUserId(userId: number) {
-  const { data: registration, error: registrationError } = await db.from('telegram_users')
-    .select('*').eq('telegram_user_id', String(userId)).maybeSingle();
-  if (registrationError) throw registrationError;
-  if (!registration) return null;
-  const { data, error } = await db.from('staff').select('*')
-    .eq('id', registration.staff_id).eq('active', true).maybeSingle();
-  if (error) throw error;
-  return data ? { ...data, ...registration, id: data.id, telegram_registration_id: registration.id } : null;
+  return (await getStaffDirectory()).byTelegramUserId.get(String(userId)) || null;
 }
 
 export async function getTestRecipient() {
-  const { data, error } = await db.from('staff').select('*')
-    .eq('name', 'Dmitry').eq('role', 'admin').eq('active', true).maybeSingle();
-  if (error) throw error;
-  return data ? withTelegramRegistration(data) : null;
+  return (await getStaffDirectory()).active.find(staff => staff.name === 'Dmitry' && staff.role === 'admin') || null;
 }
 
 export async function getStaffByGhlUser(companySlug: string, ghlUserId?: string | null) {
   if (!ghlUserId) return null;
-  const { data: companyRow, error: cErr } = await db.from('companies').select('id').eq('slug', companySlug).single();
-  if (cErr) throw cErr;
-  const { data, error } = await db.from('staff_ghl_map')
-    .select('staff:staff_id(*)')
-    .eq('company_id', companyRow.id)
-    .eq('ghl_user_id', ghlUserId)
-    .maybeSingle();
-  if (error) throw error;
-  const staff = (data as any)?.staff;
-  const person = Array.isArray(staff) ? staff[0] : staff || null;
-  return person?.active ? withTelegramRegistration(person) : null;
+  const companyRow = await getCompanyRowBySlug(companySlug);
+  return (await getStaffDirectory()).byGhlUser.get(`${companyRow.id}:${ghlUserId}`) || null;
 }
 
 export async function getManagers() {
-  const { data, error } = await db.from('staff').select('*').eq('role', 'manager').eq('active', true);
-  if (error) throw error;
-  return Promise.all((data || []).map(withTelegramRegistration));
+  return (await getStaffDirectory()).active.filter(staff => staff.role === 'manager');
 }
 
 export async function getFallbackRecipients() {
-  const { data, error } = await db.from('staff').select('*').in('role', ['manager', 'admin']).eq('active', true);
-  if (error) throw error;
-  return Promise.all((data || []).map(withTelegramRegistration));
+  return (await getStaffDirectory()).active.filter(staff => ['manager', 'admin'].includes(staff.role));
 }
 
-async function withTelegramRegistration(staff: any) {
-  const { data, error } = await db.from('telegram_users').select('*').eq('staff_id', staff.id).maybeSingle();
-  if (error) throw error;
-  return data ? { ...staff, ...data, id: staff.id, telegram_registration_id: data.id } : staff;
+export async function getKnownGhlUserIds(companySlug: string): Promise<Set<string>> {
+  const companyRow = await getCompanyRowBySlug(companySlug);
+  return new Set((await getStaffDirectory()).knownGhlUsers.get(companyRow.id) || []);
+}
+
+export async function getGhlUserName(companySlug: string, ghlUserId?: string | null): Promise<string | null> {
+  if (!ghlUserId) return null;
+  const companyRow = await getCompanyRowBySlug(companySlug);
+  return (await getStaffDirectory()).ghlUserNames.get(`${companyRow.id}:${ghlUserId}`) || null;
+}
+
+export async function warmStaffDirectory(): Promise<void> {
+  await getCompanyRows();
+  await getStaffDirectory();
 }

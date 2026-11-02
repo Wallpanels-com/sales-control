@@ -5,10 +5,13 @@ import { sendSlaAlert } from '../telegram.js';
 import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert } from './alertSafety.js';
 import { ingestMessages, recheckOpenProvisionalIncidents } from './messageState.js';
 import { resolveResponsibleGhlUser } from './routing.js';
-import { getFallbackRecipients, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
+import { getFallbackRecipients, getGhlUserName, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
 import { productionRecipients } from './recipients.js';
 import { writeSystemLog } from './systemLogs.js';
 import { evaluateFollowups } from './followups.js';
+import { getCompanyRowById } from './companyRegistry.js';
+import { runDatabaseWork } from './databaseWork.js';
+import { databaseCircuitSnapshot } from './databaseCircuit.js';
 
 // Test alerts only concern messages arriving in this run. The 24-hour bootstrap
 // import must not notify Dmitry for every historical conversation.
@@ -78,19 +81,6 @@ async function pollCompany(company: typeof companies[number]): Promise<void> {
   } finally {
     pollingCompanies.delete(company.slug);
   }
-}
-
-async function getCompanyRow(slug: string) {
-  const { data, error } = await db.from('companies').select('*').eq('slug', slug).single();
-  if (error) throw error;
-  return data;
-}
-
-async function getGhlUserName(companyId: string, ghlUserId?: string | null): Promise<string | null> {
-  if (!ghlUserId) return null;
-  const { data, error } = await db.from('ghl_users').select('name').eq('company_id', companyId).eq('ghl_user_id', ghlUserId).maybeSingle();
-  if (error) throw error;
-  return data?.name || null;
 }
 
 function contactNameFrom(value: any): string | null {
@@ -205,7 +195,9 @@ async function logAssignmentMismatchOnce(companyId: string, state: any, route: a
 }
 
 async function evaluateAlerts(): Promise<void> {
-  const { data: states, error } = await db.from('sla_incidents').select('*').eq('status', 'open');
+  const { data: states, error } = await db.from('sla_incidents')
+    .select('id,company_id,conversation_id,contact_id,latest_inbound_at,latest_inbound_message_id,latest_inbound_body,channel,responsible_ghl_user_id,responsible_source')
+    .eq('status', 'open');
   if (error) throw error;
   if (!states?.length) return;
 
@@ -245,21 +237,19 @@ async function evaluateAlerts(): Promise<void> {
 
   for (const state of states || []) {
     try {
-    const { data: row, error: rowErr } = await db.from('companies').select('slug').eq('id', state.company_id).maybeSingle();
-    if (rowErr) throw rowErr;
-    const actualCompany = companies.find(c => c.slug === row?.slug);
-    if (!actualCompany) continue;
-    // Never alert from a stale database snapshot after a restart. A temporary
-    // GHL outage/rate limit must be cleared by one successful poll first.
-    if (!companyAllowsAlerts(actualCompany.slug)) continue;
-
     const waitingMinutes = Math.floor((Date.now() - Date.parse(state.latest_inbound_at)) / 60_000);
     if (env.TEST_MODE && Date.parse(state.latest_inbound_at) < testSessionStartedAt) continue;
     if (!env.TEST_MODE && productionCutoverAtMs !== null && Date.parse(state.latest_inbound_at) < productionCutoverAtMs) continue;
     const dueThresholds = thresholdsMinutes.filter(t => waitingMinutes >= t);
     if (!dueThresholds.length) continue;
 
-    const companyRow = await getCompanyRow(actualCompany.slug);
+    const companyRow = await getCompanyRowById(state.company_id);
+    const actualCompany = companies.find(c => c.slug === companyRow?.slug);
+    if (!companyRow || !actualCompany) continue;
+    // Never alert from a stale database snapshot after a restart. A temporary
+    // GHL outage/rate limit must be cleared by one successful poll first.
+    if (!companyAllowsAlerts(actualCompany.slug)) continue;
+
     let route = {
       ghlUserId: state.responsible_ghl_user_id || null,
       source: state.responsible_source || 'unassigned',
@@ -284,7 +274,7 @@ async function evaluateAlerts(): Promise<void> {
       route = await resolveResponsibleGhlUser(actualCompany, state.conversation_id, state.contact_id) as typeof route;
       ownerStaff = await getStaffByGhlUser(actualCompany.slug, route.ghlUserId);
     }
-    const ownerName = await getGhlUserName(companyRow.id, route.ghlUserId);
+    const ownerName = await getGhlUserName(actualCompany.slug, route.ghlUserId);
     if (!ownerStaff) await logRoutingIssueOnce(companyRow.id, state.id, state.conversation_id, state.contact_id, 'unmapped_owner', {
       ghlUserId: route.ghlUserId, ownerName, source: route.source
     });
@@ -421,13 +411,17 @@ export async function startMonitor(): Promise<void> {
   }
 
   const pollLoop = async () => {
-    for (const company of companies) {
-      try { await pollCompany(company); } catch (e) { console.error('GHL poll failed', company.slug, e); }
-    }
     try {
-      const rechecked = await recheckOpenProvisionalIncidents(companies);
-      if (rechecked) console.info('Rechecked provisional AI incidents', { count: rechecked });
-    } catch (e) { console.error('Provisional AI incident recheck failed', e); }
+      await runDatabaseWork(async () => {
+        for (const company of companies) {
+          try { await pollCompany(company); }
+          catch (e) { console.error('GHL poll failed', company.slug, e); }
+          if (databaseCircuitSnapshot().blocked) return;
+        }
+        const rechecked = await recheckOpenProvisionalIncidents(companies);
+        if (rechecked) console.info('Rechecked provisional AI incidents', { count: rechecked });
+      });
+    } catch (e) { console.error('Polling cycle deferred', e); }
     setTimeout(pollLoop, env.POLL_INTERVAL_SECONDS * 1000);
   };
   setTimeout(pollLoop, env.POLL_INTERVAL_SECONDS * 1000);
@@ -435,21 +429,29 @@ export async function startMonitor(): Promise<void> {
   // Keep evaluation separate so slow/rate-limited owner lookups can never stop
   // ingestion of a real human reply.
   const alertLoop = async () => {
-    try { await evaluateAlerts(); } catch (e) { console.error('SLA evaluation failed', e); }
+    try { await runDatabaseWork(evaluateAlerts); } catch (e) { console.error('SLA evaluation failed', e); }
     setTimeout(alertLoop, env.POLL_INTERVAL_SECONDS * 1000);
   };
   setTimeout(alertLoop, Math.max(10_000, env.POLL_INTERVAL_SECONDS * 500));
 
   const followupLoop = async () => {
-    try { await evaluateFollowups(companyAllowsAlerts); }
+    try { await runDatabaseWork(() => evaluateFollowups(companyAllowsAlerts)); }
     catch { console.warn('Follow-up monitor deferred'); }
     setTimeout(followupLoop, 5 * 60_000);
   };
   setTimeout(followupLoop, 60_000);
 
-  setInterval(async () => {
-    for (const company of companies) {
-      try { await refreshGhlUsers(company); } catch (e) { console.error('GHL user refresh failed', company.slug, e); }
-    }
-  }, 6 * 3600_000);
+  const userRefreshLoop = async () => {
+    try {
+      await runDatabaseWork(async () => {
+        for (const company of companies) {
+          try { await refreshGhlUsers(company); }
+          catch (e) { console.error('GHL user refresh failed', company.slug, e); }
+          if (databaseCircuitSnapshot().blocked) return;
+        }
+      });
+    } catch (e) { console.error('GHL user refresh cycle deferred', e); }
+    setTimeout(userRefreshLoop, 6 * 3600_000);
+  };
+  setTimeout(userRefreshLoop, 6 * 3600_000);
 }
