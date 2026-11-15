@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert, verifiedIncidentHistory } from './alertSafety.js';
+import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert, verifiedIncidentHistory, withinSlaNotificationWindow } from './alertSafety.js';
 import { isHumanOutbound } from './classification.js';
 import type { GhlMessage } from '../types.js';
 
@@ -32,6 +32,28 @@ describe('post-outage conversation reconciliation', () => {
 });
 
 const template = 'https://app.gohighlevel.com/v2/location/{locationId}/conversations/conversations/{conversationId}?category=team-inbox&tab=all';
+
+describe('no historical SLA backfill', () => {
+  const now = Date.parse('2026-11-15T22:15:00Z');
+  it('blocks the thousands-of-minutes alerts from the recovery regression', () => {
+    for (const minutes of [3635,6258,8579,9069,13160,16250]) {
+      expect(withinSlaNotificationWindow(new Date(now-minutes*60_000).toISOString(),null,now)).toBe(false);
+    }
+  });
+  it('preserves 60/90/120-minute SLA and permits only bounded delay', () => {
+    for (const minutes of [60,90,120,150,180]) {
+      expect(withinSlaNotificationWindow(new Date(now-minutes*60_000).toISOString(),null,now)).toBe(true);
+    }
+    expect(withinSlaNotificationWindow(new Date(now-181*60_000).toISOString(),null,now)).toBe(false);
+  });
+  it('blocks earlier messages when a recovery baseline is set', () => {
+    const cutover=now-10*60_000;
+    expect(withinSlaNotificationWindow(new Date(now-60*60_000).toISOString(),cutover,now)).toBe(false);
+    expect(withinSlaNotificationWindow(new Date(cutover).toISOString(),cutover,now)).toBe(true);
+    expect(withinSlaNotificationWindow('invalid',null,now)).toBe(false);
+    expect(withinSlaNotificationWindow(new Date(now+1).toISOString(),null,now)).toBe(false);
+  });
+});
 
 describe('buildConversationUrl', () => {
   it('keeps the exact conversation path and searches by a real customer name', () => {

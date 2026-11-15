@@ -1,6 +1,14 @@
 import type { GhlMessage } from '../types.js';
 import { isCustomerCommunication } from './classification.js';
 
+export function withinSlaNotificationWindow(inboundAt: string, cutoverAt: number | null, now = Date.now()): boolean {
+  const at = Date.parse(inboundAt);
+  // Recovery must not turn old incidents into a new notification campaign.
+  // Normal thresholds remain 60/90/120; permit at most one hour of delay.
+  return Number.isFinite(at) && at <= now && now - at <= 180 * 60_000
+    && (cutoverAt === null || at >= cutoverAt);
+}
+
 export function verifiedIncidentHistory(
   messages: GhlMessage[],
   scope: { locationId: string; conversationId: string; contactId: string; inboundMessageId: string }

@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import type { CompanyConfig, GhlMessage } from '../types.js';
-import { env } from '../config.js';
+import { env, productionCutoverAtMs } from '../config.js';
 import { messagePreview, truncate } from '../utils/text.js';
 import { inboundClassifier, suppressesSlaIncident, type AiClassification, type AiConversationMessage } from './aiClassifier.js';
 import { isCustomerCommunication, isHumanOutbound, normalizeChannel } from './classification.js';
@@ -141,6 +141,12 @@ export async function ingestMessages(company: CompanyConfig, messages: GhlMessag
     }
 
     if (m.direction === 'inbound') {
+      // Keep newly discovered historical email IDs as events, never as new
+      // SLA work before the production recovery baseline.
+      if (productionCutoverAtMs !== null && Date.parse(m.dateAdded) < productionCutoverAtMs) {
+        processed++;
+        continue;
+      }
       const { data: recordedIncident, error: recordedError } = await db.from('sla_incidents')
         .select('id,status').eq('company_id', companyRow.id)
         .eq('latest_inbound_message_id', m.id).maybeSingle();

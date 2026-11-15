@@ -2,7 +2,7 @@ import { companies, env, productionCutoverAtMs, thresholdsMinutes } from '../con
 import { db } from '../db.js';
 import { HighLevelClient } from '../highlevel/client.js';
 import { sendSlaAlert } from '../telegram.js';
-import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert, verifiedIncidentHistory } from './alertSafety.js';
+import { buildConversationUrl, incidentStillAllowsAlert, syncAllowsAlert, verifiedIncidentHistory, withinSlaNotificationWindow } from './alertSafety.js';
 import { ingestMessages, recheckOpenProvisionalIncidents } from './messageState.js';
 import { resolveResponsibleGhlUser } from './routing.js';
 import { getFallbackRecipients, getGhlUserName, getStaffByGhlUser, getTestRecipient, syncGhlUsers } from './staff.js';
@@ -253,7 +253,7 @@ async function evaluateAlerts(): Promise<void> {
     try {
     const waitingMinutes = Math.floor((Date.now() - Date.parse(state.latest_inbound_at)) / 60_000);
     if (env.TEST_MODE && Date.parse(state.latest_inbound_at) < testSessionStartedAt) continue;
-    if (!env.TEST_MODE && productionCutoverAtMs !== null && Date.parse(state.latest_inbound_at) < productionCutoverAtMs) continue;
+    if (!env.TEST_MODE && !withinSlaNotificationWindow(state.latest_inbound_at, productionCutoverAtMs)) continue;
     const dueThresholds = thresholdsMinutes.filter(t => waitingMinutes >= t);
     if (!dueThresholds.length) continue;
 

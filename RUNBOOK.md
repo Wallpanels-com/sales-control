@@ -10,6 +10,8 @@ Provisional AI checks load small classification metadata first; full raw message
 
 Before a due SLA notification, the monitor verifies the exact CRM conversation, company and inbound anchor and reconciles messages since that anchor. This covers human replies outside the startup lookback after a long outage. If CRM history is unavailable or incomplete, delivery is deferred. A successful highest-threshold notification covers earlier missed thresholds instead of sending a 60/90/120 burst.
 
+Historical recovery is never a notification campaign. `PRODUCTION_CUTOVER_AT` is enforced both when creating incidents and when sending them. Production SLA alerts are additionally limited to inbound messages no older than 180 minutes (the 120-minute threshold plus at most one hour of recovery delay). Older records remain diagnostic history and cannot generate late thousands-of-minutes alerts. Follow-up reminders retain their separate day-based schedule.
+
 After a quota recovery, confirm `/health` reports `ready: true`, `telegramPolling: true`, `database.blocked: false`, then inspect Railway logs and Supabase request counts. For a read-only connection diagnostic, run `npm run build` and `node scripts/verify-connections.mjs`; it does not start polling or send Telegram messages. Do not run another copy of the production bot locally.
 
 The `/health` `monitor` array shows the last successful synchronization time per company, whether a poll is in progress, and whether the fresh synchronization gate currently permits alerts. A company is temporarily not alert-ready during its poll; a persistently stale timestamp requires investigation.
