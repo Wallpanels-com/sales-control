@@ -19,7 +19,7 @@ app.get('/health', async (_request, reply) => {
     companies: companies.map(c => c.slug), thresholdsMinutes, database, monitor: monitorHealth(),
     ai: { enabled: Boolean(env.GROQ_API_KEY), model: env.AI_MODEL, confidenceThreshold: env.AI_CONFIDENCE_THRESHOLD },
     productionCutoverAt: env.PRODUCTION_CUTOVER_AT || null,
-    followups: { mode: env.FOLLOWUP_MODE, delaysHours: [24,48,96] }
+    followups: { mode: env.FOLLOWUP_MODE, delaysHours: [24,48,96], deliveryGraceHours: 6, cutoverAt: env.FOLLOWUP_CUTOVER_AT || null }
   });
 });
 

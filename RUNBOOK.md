@@ -12,6 +12,8 @@ Before a due SLA notification, the monitor verifies the exact CRM conversation, 
 
 Historical recovery is never a notification campaign. `PRODUCTION_CUTOVER_AT` is enforced both when creating incidents and when sending them. Production SLA alerts are additionally limited to inbound messages no older than 180 minutes (the 120-minute threshold plus at most one hour of recovery delay). Older records remain diagnostic history and cannot generate late thousands-of-minutes alerts. Follow-up reminders retain their separate day-based schedule.
 
+Follow-ups have their own recovery baseline (`FOLLOWUP_CUTOVER_AT`), checked before CRM/AI work and again immediately before every Telegram send. Only anchors after that baseline may notify. Stage 1/2/3 must be due from the actual manual sales message by 24/48/96 hours, with at most six hours of delivery delay. Retry updates to `due_at` never reset the anchor age; expired rows are suppressed without delivery. A suppressed historical cycle starts again at stage 1 only on a new real sales message, not on replay, automation, or time passing.
+
 After a quota recovery, confirm `/health` reports `ready: true`, `telegramPolling: true`, `database.blocked: false`, then inspect Railway logs and Supabase request counts. For a read-only connection diagnostic, run `npm run build` and `node scripts/verify-connections.mjs`; it does not start polling or send Telegram messages. Do not run another copy of the production bot locally.
 
 The `/health` `monitor` array shows the last successful synchronization time per company, whether a poll is in progress, and whether the fresh synchronization gate currently permits alerts. A company is temporarily not alert-ready during its poll; a persistently stale timestamp requires investigation.

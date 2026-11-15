@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { advanceFollowup, followupRecipients, type FollowupEvent } from './followupPolicy.js';
+import { advanceFollowup, followupNoticeKey, followupRecipients, followupWindow, type FollowupEvent } from './followupPolicy.js';
 const outbound: FollowupEvent = { id: 'sales-1', at: '2026-10-23T12:00:00Z', direction: 'outbound',
   human: true, channel: 'Instagram', previousInboundId: 'customer-1' };
 describe('follow-up chain', () => {
@@ -35,6 +35,47 @@ describe('follow-up chain', () => {
     const first = advanceFollowup(null,outbound)!;
     expect(advanceFollowup(first,{...outbound,id:'sales-1-part2',at:'2026-10-23T12:01:00Z'}))
       .toMatchObject({stage:1,due_at:'2026-10-24T12:01:00.000Z'});
+  });
+  it('starts at stage one after a suppressed historical cycle receives a new real sales message', () => {
+    const previous={...advanceFollowup(null,outbound)!,stage:2,status:'suppressed' as const};
+    expect(advanceFollowup(previous,{...outbound,id:'new-sales',at:'2026-11-16T12:00:00Z'}))
+      .toMatchObject({stage:1,status:'waiting',due_at:'2026-11-17T12:00:00.000Z'});
+    expect(advanceFollowup(previous,{...outbound,id:'workflow',at:'2026-11-16T12:00:00Z',human:false})).toBeNull();
+    const next=advanceFollowup(previous,{...outbound,id:'new-sales',at:'2026-11-16T12:00:00Z'})!;
+    expect(followupNoticeKey('thread',next.cycle_inbound_message_id,next.anchor_message_id,1,'sales'))
+      .not.toBe(followupNoticeKey('thread',previous.cycle_inbound_message_id,previous.anchor_message_id,1,'sales'));
+  });
+});
+
+describe('follow-up delivery freshness', () => {
+  const now=Date.parse('2026-11-16T12:00:00Z');
+  const baseline=Date.parse('2026-11-01T00:00:00Z');
+  const thread=(stage:number,ageHours:number,dueAt=now)=>({stage,
+    anchor_at:new Date(now-ageHours*3600_000).toISOString(),due_at:new Date(dueAt).toISOString()});
+
+  it('preserves the three intended 24/48/96 hour deadlines', () => {
+    for(const [stage,hours] of [[1,24],[2,48],[3,96]]) {
+      expect(followupWindow(thread(stage,hours),baseline,now)).toBe('eligible');
+      expect(followupWindow(thread(stage,hours-1),baseline,now)).toBe('not_due');
+    }
+  });
+  it('blocks every stale example in the screenshots, including stage two', () => {
+    for(const age of [220,286,310,311,312,482,557]) {
+      expect(followupWindow(thread(1,age),0,now)).toBe('expired');
+    }
+    expect(followupWindow(thread(2,221),0,now)).toBe('expired');
+  });
+  it('does not make historical reminders fresh by postponing due_at', () => {
+    expect(followupWindow(thread(1,312,now),0,now)).toBe('expired');
+    expect(followupWindow(thread(1,312,now+30*60_000),0,now)).toBe('expired');
+    expect(followupWindow(thread(3,103),0,now)).toBe('expired');
+  });
+  it('blocks anchors before the recovery baseline and respects bounded delivery delay', () => {
+    expect(followupWindow(thread(1,24),now-3600_000,now)).toBe('before_cutover');
+    expect(followupWindow(thread(1,30),baseline,now)).toBe('eligible');
+    expect(followupWindow(thread(1,30.01),baseline,now)).toBe('expired');
+    expect(followupWindow(thread(1,24),null,now)).toBe('invalid');
+    expect(followupWindow(thread(4,24),baseline,now)).toBe('invalid');
   });
 });
 describe('follow-up routing safety', () => {

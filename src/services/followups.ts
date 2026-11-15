@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
-import { companies, env } from '../config.js';
+import { companies, env, followupCutoverAtMs } from '../config.js';
 import { bot } from '../telegram.js';
 import { HighLevelClient } from '../highlevel/client.js';
 import type { CompanyConfig, GhlMessage } from '../types.js';
 import { isCustomerCommunication, isHumanOutbound } from './classification.js';
 import { messagePreview, truncate } from '../utils/text.js';
 import { FollowupAi } from './followupAi.js';
-import { followupRecipients } from './followupPolicy.js';
+import { followupNoticeKey, followupRecipients, followupWindow } from './followupPolicy.js';
 import { renderFollowupNotification } from './followupTelegram.js';
 import { resolveResponsibleGhlUser } from './routing.js';
 import { getFallbackRecipients, getGhlUserName, getKnownGhlUserIds, getStaffByGhlUser, getStaffByTelegramUsername, getTestRecipient } from './staff.js';
@@ -64,31 +64,38 @@ async function deliver(company: CompanyConfig, thread: any, prepared: NonNullabl
   const recipients = followupRecipients(preview ? 'preview' : env.FOLLOWUP_MODE, prepared.owner, globals, test);
   let sent = 0;
   let firstSentAt: string | null = null;
+  const attemptedRecipients = new Set<string>();
   if (!preview) {
     // Recovery after a successful Telegram send followed by a failed state
     // update: keep the confirmed send time instead of generating forever.
     const { data: confirmed, error } = await db.from('followup_notifications')
-      .select('sent_at').eq('thread_id', thread.id).eq('cycle_inbound_message_id', thread.cycle_inbound_message_id)
-      .eq('stage', thread.stage).eq('preview', false).eq('delivery_status', 'sent')
-      .order('sent_at').limit(1).maybeSingle();
+      .select('recipient_staff_id,delivery_status,sent_at').eq('thread_id', thread.id).eq('cycle_inbound_message_id', thread.cycle_inbound_message_id)
+      .eq('anchor_message_id', thread.anchor_message_id)
+      .eq('stage', thread.stage).eq('preview', false).order('sent_at');
     if (error) throw error;
-    firstSentAt = confirmed?.sent_at || null;
+    for (const notice of confirmed || []) {
+      if (['sent','sending','uncertain'].includes(notice.delivery_status)) attemptedRecipients.add(notice.recipient_staff_id);
+      if (notice.delivery_status === 'sent' && notice.sent_at) firstSentAt ||= notice.sent_at;
+    }
   }
   for (const recipient of recipients) {
     if (!recipient.telegram_chat_id) continue;
+    if (!preview && attemptedRecipients.has(recipient.id)) continue;
     if (!preview) {
-      if (env.FOLLOWUP_MODE !== 'production' || env.TEST_MODE || !companyAllowsAlerts(company.slug)) break;
-      const { data: fresh, error } = await db.from('followup_threads').select('status,stage,last_event_key')
+      if (env.FOLLOWUP_MODE !== 'production' || env.TEST_MODE || !companyAllowsAlerts(company.slug)
+        || followupWindow(thread, followupCutoverAtMs) !== 'eligible') break;
+      const { data: fresh, error } = await db.from('followup_threads').select('status,stage,last_event_key,anchor_at,due_at')
         .eq('id', thread.id).single();
       if (error) throw error;
       if (fresh.status !== 'waiting' || fresh.stage !== thread.stage || fresh.last_event_key !== thread.last_event_key) break;
+      if (followupWindow(fresh, followupCutoverAtMs) !== 'eligible') break;
       const { data: newer, error: newerError } = await db.from('message_events').select('id,direction,is_human_outbound')
         .eq('company_id', thread.company_id).eq('conversation_id', thread.conversation_id).gt('date_added', thread.anchor_at);
       if (newerError) throw newerError;
       if (newer?.some(message => message.direction === 'inbound' || message.is_human_outbound)) break;
     }
     const dedupe = preview ? `preview:${randomUUID()}`
-      : `${thread.id}:${thread.cycle_inbound_message_id}:${thread.stage}:${recipient.id}`;
+      : followupNoticeKey(thread.id,thread.cycle_inbound_message_id,thread.anchor_message_id,thread.stage,recipient.id);
     const { data: notice, error: claimError } = await db.from('followup_notifications').insert({
       dedupe_key: dedupe, thread_id: preview ? null : thread.id, company_id: thread.company_id,
       conversation_id: thread.conversation_id, cycle_inbound_message_id: thread.cycle_inbound_message_id,
@@ -127,13 +134,23 @@ async function deliver(company: CompanyConfig, thread: any, prepared: NonNullabl
 
 export async function evaluateFollowups(companyAllowsAlerts: (slug: string) => boolean): Promise<void> {
   // Preview mode NEVER has an automatic delivery path, even to Dmitry. Only an explicit preview command sends one example.
-  if (env.FOLLOWUP_MODE !== 'production' || env.TEST_MODE) return;
+  if (env.FOLLOWUP_MODE !== 'production' || env.TEST_MODE || followupCutoverAtMs === null) return;
   const { data: threads, error } = await db.from('followup_threads')
     .select('id,company_id,conversation_id,contact_id,cycle_inbound_message_id,anchor_message_id,anchor_at,channel,stage,status,due_at,last_event_key')
-    .eq('status','waiting').lte('due_at',new Date().toISOString()).order('due_at').limit(10);
+    .eq('status','waiting').gte('anchor_at',new Date(followupCutoverAtMs).toISOString())
+    .lte('due_at',new Date().toISOString()).order('due_at').limit(10);
   if (error) throw error;
   const companyRows = await getCompanyRows();
   for (const thread of threads || []) {
+    const eligibility = followupWindow(thread, followupCutoverAtMs);
+    if (eligibility === 'not_due') continue;
+    if (eligibility !== 'eligible') {
+      const { error: expireError } = await db.from('followup_threads')
+        .update({ status: 'suppressed', updated_at: new Date().toISOString() })
+        .eq('id',thread.id).eq('status','waiting').eq('last_event_key',thread.last_event_key);
+      if (expireError) throw expireError;
+      continue;
+    }
     const slug = companyRows.find(row => row.id === thread.company_id)?.slug;
     const company = companies.find(company => company.slug === slug);
     if (!company || !companyAllowsAlerts(company.slug)) continue;

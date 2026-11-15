@@ -2,6 +2,29 @@ import type { AlertRecipient } from './recipients.js';
 import { productionRecipients } from './recipients.js';
 
 export const FOLLOWUP_DELAYS_MS = [24, 48, 96].map(hours => hours * 3600_000);
+export const FOLLOWUP_DELIVERY_GRACE_MS = 6 * 3600_000;
+
+export function followupNoticeKey(threadId: string, cycleId: string, anchorId: string, stage: number, recipientId: string): string {
+  return `${threadId}:${cycleId}:${anchorId}:${stage}:${recipientId}`;
+}
+
+export function followupWindow(
+  thread: { stage: number; anchor_at: string; due_at: string },
+  cutoverAt: number | null,
+  now = Date.now()
+): 'eligible' | 'not_due' | 'expired' | 'before_cutover' | 'invalid' {
+  const anchor = Date.parse(thread.anchor_at);
+  const due = Date.parse(thread.due_at);
+  const delay = FOLLOWUP_DELAYS_MS[thread.stage - 1];
+  if (!Number.isInteger(thread.stage) || !delay || !Number.isFinite(anchor) || !Number.isFinite(due)
+    || anchor > now || cutoverAt === null) return 'invalid';
+  if (anchor < cutoverAt) return 'before_cutover';
+  // A retry may move due_at, but must never make an old anchor fresh again.
+  const planned = anchor + delay;
+  if (now > planned + FOLLOWUP_DELIVERY_GRACE_MS) return 'expired';
+  if (now < planned || now < due) return 'not_due';
+  return 'eligible';
+}
 export interface FollowupState {
   cycle_inbound_message_id: string;
   anchor_message_id: string;
@@ -31,7 +54,7 @@ export function advanceFollowup(current: FollowupState | null, event: FollowupEv
     return current ? { ...current, status: 'replied', last_event_key: key } : null;
   }
   if (!event.human || !event.previousInboundId) return null;
-  const newCycle = !current || current.status === 'replied'
+  const newCycle = !current || current.status === 'replied' || current.status === 'suppressed'
     || current.cycle_inbound_message_id !== event.previousInboundId;
   let stage = newCycle ? 1 : current.stage;
   let status: FollowupState['status'] = 'waiting';
