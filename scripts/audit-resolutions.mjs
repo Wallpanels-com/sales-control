@@ -9,7 +9,7 @@ const cutover = process.argv.find(value=>value.startsWith('--cutover='))?.slice(
 if (apply && !Number.isFinite(Date.parse(cutover))) throw new Error('A verified production cutover is required');
 const db = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY);
 const { data: rows, error } = await db.from('message_events').select('company_id,message_id,raw')
-  .eq('is_human_outbound',true).or('channel.eq.Other:INTERNAL_COMMENT,raw->>status.in.(failed,undelivered,pending,scheduled,opt_out,canceled,cancelled,draft)');
+  .or('channel.eq.Other:INTERNAL_COMMENT,raw->>status.in.(failed,undelivered,pending,scheduled,opt_out,canceled,cancelled,draft)');
 if (error) throw new Error('Cannot load suspect resolution metadata');
 const { data: companyRows } = await db.from('companies').select('id,slug');
 const { data: users } = await db.from('ghl_users').select('company_id,ghl_user_id');
@@ -18,7 +18,6 @@ const { data: incidents, error: incidentError } = await db.from('sla_incidents')
   .eq('status','resolved').in('resolved_by_message_id', rows.map(row=>row.message_id));
 if (incidentError) throw new Error('Cannot load suspect incidents');
 if (incidents.length > 25) throw new Error('Unexpected repair scope; stopped');
-const { ingestMessages } = apply ? await import('../dist/services/messageState.js') : {};
 const check = result => { if (result.error) throw new Error('Audit database update failed'); return result; };
 if (apply) {
   for (const row of rows) {
@@ -39,8 +38,8 @@ for (const incident of incidents) {
     const replies = history.filter(message=>isHumanOutbound(message,humans)).sort((a,b)=>Date.parse(a.dateAdded)-Date.parse(b.dateAdded));
     let correction = 'read_only';
     if (apply) {
-      // Persist real CRM evidence first. This function has no Telegram sender.
-      await ingestMessages(company,history);
+      // Correct only the verified resolution metadata. Never replay history,
+      // reclassify messages with local credentials, or start notification work.
       const { data: currentOpen, error: openError } = await db.from('sla_incidents').select('id')
         .eq('company_id',incident.company_id).eq('conversation_id',incident.conversation_id).eq('status','open').maybeSingle();
       if (openError) throw new Error('Cannot verify current incident state');
