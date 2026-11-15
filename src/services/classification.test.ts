@@ -21,10 +21,22 @@ describe('HighLevel message classification', () => {
     expect(normalizeChannel({ ...base, direction:'inbound', messageType:'TYPE_CUSTOM_CHAT', body:'Hello' })).toBe('Other:CUSTOM_CHAT');
     expect(normalizeChannel({ ...base, direction:'inbound', messageType:'TYPE_VOICE_NOTE', body:undefined, attachments:['attachment'] })).toBe('Other:VOICE_NOTE');
     expect(normalizeChannel({ ...base, direction:'inbound', messageType:'TYPE_NEW_INBOX', body:undefined, files:['file'] })).toBe('Other:NEW_INBOX');
-    for (const messageType of ['CALL','TYPE_MISSED_CALL','TYPE_CALL_RECORDING','TYPE_VOICEMAIL','TYPE_CAMPAIGN_SMS','TYPE_APPOINTMENT']) {
+    for (const messageType of ['CALL','TYPE_MISSED_CALL','TYPE_CALL_RECORDING','TYPE_VOICEMAIL','TYPE_CAMPAIGN_SMS','TYPE_APPOINTMENT','TYPE_INTERNAL_COMMENT','TYPE_INTERNAL_NOTE']) {
       expect(isCustomerCommunication({ ...base, direction:'inbound', messageType, body:'Missed call' })).toBe(false);
     }
     expect(normalizeChannel({ ...base, messageType:'TYPE_UNKNOWN', body:undefined, attachments:[] })).toBe(null);
+  });
+
+  it('never counts internal comments, failed sends or scheduled messages as a customer reply', () => {
+    const humans = new Set(['user-1']);
+    expect(isHumanOutbound({ ...base, source: 'app', messageType: 'TYPE_INTERNAL_COMMENT', body: 'Private note' }, humans)).toBe(false);
+    expect(isHumanOutbound({ ...base, source: 'app', messageType: 'TYPE_CALL' }, humans)).toBe(false);
+    for (const status of ['failed', 'undelivered', 'pending', 'scheduled', 'opt_out', 'draft', 'cancelled']) {
+      expect(isHumanOutbound({ ...base, source: 'app', status }, humans)).toBe(false);
+    }
+    for (const status of ['sent', 'delivered', 'read', 'opened', undefined]) {
+      expect(isHumanOutbound({ ...base, source: 'app', status }, humans)).toBe(true);
+    }
   });
 
   it('resolves manual app replies while rejecting automation and unknown supplied users', () => {

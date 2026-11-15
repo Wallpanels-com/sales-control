@@ -92,11 +92,46 @@ export class HighLevelClient {
         `/conversations/${encodeURIComponent(conversationId)}/messages`,
         { query: { limit: 100, lastMessageId }, maxAttempts: 1 });
       all.push(...(data.messages?.messages || []));
-      if (all.some(message => message.id === anchorId) || !data.messages?.nextPage) return all;
+      // Email exports return individual email IDs; inbox history returns thread
+      // IDs with those email IDs nested in meta.email.messageIds.
+      if (all.some(message => message.id === anchorId || this.emailIds(message).includes(anchorId))
+        || !data.messages?.nextPage) return this.expandEmailThreads(all);
       if (!data.messages.lastMessageId || data.messages.lastMessageId === lastMessageId) break;
       lastMessageId = data.messages.lastMessageId;
     }
     throw new Error('Cannot verify follow-up anchor in bounded CRM history');
+  }
+
+  private emailIds(message: GhlMessage): string[] {
+    if (!/^(TYPE_)?EMAIL$/i.test(message.messageType || '')) return [];
+    const ids = (message.meta as { email?: { messageIds?: unknown } } | undefined)?.email?.messageIds;
+    if (!Array.isArray(ids)) return [];
+    return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  }
+
+  private async expandEmailThreads(messages: GhlMessage[]): Promise<GhlMessage[]> {
+    const emails = new Map<string, GhlMessage>();
+    for (const message of messages) {
+      for (const id of this.emailIds(message)) emails.set(id, message);
+    }
+    if (emails.size > 200) throw new Error('Email history exceeds bounded verification limit');
+    const expanded = new Map(messages.filter(message => !this.emailIds(message).length).map(message => [message.id, message]));
+    const queue = [...emails.entries()];
+    // Bound concurrency and total requests. A missing email fails the entire
+    // verification instead of silently hiding a possible human reply.
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (queue.length) {
+        const [id, thread] = queue.shift()!;
+        const payload = await this.request<{ emailMessage: GhlMessage }>(`/conversations/messages/email/${encodeURIComponent(id)}`, { maxAttempts: 1 });
+        const email = payload.emailMessage;
+        if (!email || email.id !== id || email.locationId !== this.company.locationId
+          || email.conversationId !== thread.conversationId || email.contactId !== thread.contactId
+          || !Number.isFinite(Date.parse(email.dateAdded))) throw new Error('Email history scope verification failed');
+        // Source/direction/status belong to each email, never to its thread.
+        expanded.set(id, { ...email, messageType: 'TYPE_EMAIL' });
+      }
+    }));
+    return [...expanded.values()];
   }
 
   async getContact(contactId: string, maxAttempts = 5): Promise<any> {

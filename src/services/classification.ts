@@ -18,6 +18,7 @@ export function normalizeChannel(m: GhlMessage): string | null {
   const type = (m.messageType || '').replace(/^TYPE_/i, '').trim().toUpperCase();
   // Export without a channel also contains calls and CRM activity records.
   if (/(?:^|_)(?:CALL|VOICEMAIL)(?:_|$)/.test(type)
+    || /^(?:INTERNAL_COMMENT|INTERNAL_NOTE|COMMENT|NOTE)(?:_|$)/.test(type)
     || /^(?:CAMPAIGN_|OPPORTUNITY(?:_|$)|APPOINTMENT(?:_|$)|INVOICE(?:_|$)|PAYMENT(?:_|$)|TASK(?:_|$)|NOTE(?:_|$)|ACTIVITY(?:_|$))/.test(type)
     || /_(?:REVIEW|NO_SHOW)_REQUEST$/.test(type)) return null;
   if (CHANNELS[type]) return CHANNELS[type];
@@ -32,7 +33,9 @@ export function isCustomerCommunication(m: GhlMessage): boolean {
 }
 
 export function isHumanOutbound(m: GhlMessage, humans: Set<string>): boolean {
-  if (m.direction !== 'outbound') return false;
+  if (m.direction !== 'outbound' || !isCustomerCommunication(m)) return false;
+  if (['failed', 'undelivered', 'scheduled', 'pending', 'opt_out', 'canceled', 'cancelled', 'draft']
+    .includes((m.status || '').toLowerCase())) return false;
   const source = (m.source || '').toLowerCase().replace(/[ -]/g, '_');
   if (!HUMAN_SOURCES.has(source)) return false;
   return !m.userId || humans.has(m.userId);

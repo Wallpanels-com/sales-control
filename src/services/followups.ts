@@ -64,6 +64,16 @@ async function deliver(company: CompanyConfig, thread: any, prepared: NonNullabl
   const recipients = followupRecipients(preview ? 'preview' : env.FOLLOWUP_MODE, prepared.owner, globals, test);
   let sent = 0;
   let firstSentAt: string | null = null;
+  if (!preview) {
+    // Recovery after a successful Telegram send followed by a failed state
+    // update: keep the confirmed send time instead of generating forever.
+    const { data: confirmed, error } = await db.from('followup_notifications')
+      .select('sent_at').eq('thread_id', thread.id).eq('cycle_inbound_message_id', thread.cycle_inbound_message_id)
+      .eq('stage', thread.stage).eq('preview', false).eq('delivery_status', 'sent')
+      .order('sent_at').limit(1).maybeSingle();
+    if (error) throw error;
+    firstSentAt = confirmed?.sent_at || null;
+  }
   for (const recipient of recipients) {
     if (!recipient.telegram_chat_id) continue;
     if (!preview) {
@@ -131,8 +141,9 @@ export async function evaluateFollowups(companyAllowsAlerts: (slug: string) => b
       const prepared = await prepare(company, thread);
       const suggestion = prepared?.suggestion;
       if (!suggestion || suggestion.confidence < 0.9 || !prepared) {
-        await db.from('followup_threads').update({ due_at: new Date(Date.now()+30*60_000).toISOString() })
-          .eq('id',thread.id).eq('last_event_key',thread.last_event_key);
+        const { error: deferError } = await db.from('followup_threads').update({ due_at: new Date(Date.now()+30*60_000).toISOString() })
+          .eq('id',thread.id).eq('last_event_key',thread.last_event_key).eq('status', 'waiting');
+        if (deferError) throw deferError;
         continue;
       }
       if (!suggestion.should_follow_up) {
@@ -144,8 +155,18 @@ export async function evaluateFollowups(companyAllowsAlerts: (slug: string) => b
         if (suppressError) throw suppressError;
         continue;
       }
-      await deliver(company, thread, prepared, false, companyAllowsAlerts);
+      const sent = await deliver(company, thread, prepared, false, companyAllowsAlerts);
+      if (!sent) {
+        const { error: deferError } = await db.from('followup_threads')
+          .update({ due_at: new Date(Date.now()+30*60_000).toISOString() })
+          .eq('id',thread.id).eq('last_event_key',thread.last_event_key).eq('status','waiting');
+        if (deferError) throw deferError;
+      }
     } catch {
+      // Failed oldest rows must not monopolize the bounded queue every five
+      // minutes or repeatedly call CRM/AI for the same unavailable history.
+      await db.from('followup_threads').update({ due_at: new Date(Date.now()+30*60_000).toISOString() })
+        .eq('id',thread.id).eq('last_event_key',thread.last_event_key).eq('status','waiting');
       console.warn('Follow-up evaluation deferred', { company: company.slug });
     }
   }

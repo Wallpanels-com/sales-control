@@ -12,6 +12,7 @@ import { evaluateFollowups } from './followups.js';
 import { getCompanyRowById } from './companyRegistry.js';
 import { runDatabaseWork } from './databaseWork.js';
 import { databaseCircuitSnapshot } from './databaseCircuit.js';
+import { RetryGate } from './retryGate.js';
 
 // Test alerts only concern messages arriving in this run. The 24-hour bootstrap
 // import must not notify Dmitry for every historical conversation.
@@ -20,6 +21,7 @@ const lastSuccessfulPollEnd = new Map<string, number>();
 const rateLimitedUntil = new Map<string, number>();
 const pollHealthy = new Map<string, boolean>();
 const pollingCompanies = new Set<string>();
+const verificationRetries = new RetryGate();
 
 export function monitorHealth() {
   return companies.map(company => ({
@@ -209,6 +211,7 @@ async function evaluateAlerts(): Promise<void> {
     .select('id,company_id,conversation_id,contact_id,latest_inbound_at,latest_inbound_message_id,latest_inbound_body,channel,responsible_ghl_user_id,responsible_source')
     .eq('status', 'open');
   if (error) throw error;
+  verificationRetries.retain(new Set((states || []).map(state => `${state.id}:${state.latest_inbound_message_id}`)));
   if (!states?.length) return;
 
   const incidentIds = states.map((state: any) => state.id);
@@ -273,6 +276,8 @@ async function evaluateAlerts(): Promise<void> {
     const needsWork = dueThresholds.some(threshold =>
       preliminaryRecipients.some((recipient: any) => shouldAttemptRecipient(state, threshold, recipient)));
     if (!needsWork) continue;
+    const verificationKey = `${state.id}:${state.latest_inbound_message_id}`;
+    if (!verificationRetries.allows(verificationKey)) continue;
 
     // A successful rolling export does not cover replies older than its
     // lookback after a long outage. Reconcile this exact conversation only
@@ -280,7 +285,9 @@ async function evaluateAlerts(): Promise<void> {
     const ghl = new HighLevelClient(actualCompany);
     const conversation = await ghl.getConversation(state.conversation_id, 1);
     if (conversation.locationId !== actualCompany.locationId
-      || conversation.contactId !== state.contact_id || conversation.deleted) continue;
+      || conversation.contactId !== state.contact_id || conversation.deleted) {
+      throw new Error('Conversation unavailable or scope mismatch');
+    }
     const history = verifiedIncidentHistory(
       await ghl.getConversationMessages(state.conversation_id, state.latest_inbound_message_id),
       { locationId: actualCompany.locationId, conversationId: state.conversation_id,
@@ -290,6 +297,7 @@ async function evaluateAlerts(): Promise<void> {
     const { data: reconciled, error: reconciliationError } = await db.from('sla_incidents')
       .select('status,latest_inbound_message_id').eq('id', state.id).single();
     if (reconciliationError) throw reconciliationError;
+    verificationRetries.clear(verificationKey);
     if (!incidentStillAllowsAlert(state, reconciled)) continue;
 
     // Refresh routing only when a threshold actually needs delivery. The old
@@ -411,8 +419,10 @@ async function evaluateAlerts(): Promise<void> {
         const company = companies.find(company => company.slug === row?.slug);
         if (company) pauseForRateLimit(company);
       }
-      console.error('SLA conversation evaluation failed', {
+      const retryAt = verificationRetries.defer(`${state.id}:${state.latest_inbound_message_id}`);
+      console.warn('SLA conversation evaluation deferred', {
         companyId: state.company_id,
+        retryAt: new Date(retryAt).toISOString(),
         error: stateError instanceof Error ? stateError.message : 'unknown'
       });
     }

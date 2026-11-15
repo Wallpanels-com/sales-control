@@ -14,6 +14,10 @@ After a quota recovery, confirm `/health` reports `ready: true`, `telegramPollin
 
 The `/health` `monitor` array shows the last successful synchronization time per company, whether a poll is in progress, and whether the fresh synchronization gate currently permits alerts. A company is temporarily not alert-ready during its poll; a persistently stale timestamp requires investigation.
 
+HighLevel conversation history groups Email into threads. Verification expands `meta.email.messageIds` through the read-only email endpoint and uses each email's actual ID, timestamp, direction, source and delivery status. It never treats the thread ID or thread source as an individual customer/human message. Expansion is bounded and fails closed on missing or mismatched data.
+
+Internal comments/notes, calls, scheduled messages and failed/undelivered outbound messages cannot count as customer replies. Failed conversation verification retries after 15/30/60 minutes, resets for a new inbound ID, and frees memory for closed incidents. Failed follow-up rows are postponed by 30 minutes so they cannot monopolize the ten-item queue. Existing confirmed sends recover the follow-up reminder state without resending.
+
 ## Rotate a token
 
 Replace the affected value in the local ignored `.env.local` and the matching Railway variable, then restart the one Railway service. Rotate the old credential in its provider after the new one passes `/health` and a read-only connection check. Keep `TEST_MODE=true` during rotation. Never paste token values into logs, issues, or commits.

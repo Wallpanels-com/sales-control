@@ -15,6 +15,8 @@ async function conversationContext(companyId: string, message: GhlMessage): Prom
     .select('direction,body,channel,is_human_outbound,date_added')
     .eq('company_id', companyId)
     .eq('conversation_id', message.conversationId)
+    .neq('channel', 'Other:INTERNAL_COMMENT')
+    .neq('channel', 'Other:INTERNAL_NOTE')
     .lt('date_added', message.dateAdded)
     .order('date_added', { ascending: false })
     .limit(5);
@@ -100,6 +102,7 @@ export async function ingestMessages(company: CompanyConfig, messages: GhlMessag
   let processed = 0;
 
   const sorted = [...messages]
+    .filter(message => message.locationId === company.locationId)
     .filter(isCustomerCommunication)
     .filter(m => m.id && m.conversationId && m.contactId && m.dateAdded && Number.isFinite(Date.parse(m.dateAdded)))
     .sort((a,b) => Date.parse(a.dateAdded) - Date.parse(b.dateAdded)
